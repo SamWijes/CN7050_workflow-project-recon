@@ -146,7 +146,65 @@ def create_work_order_and_notify(project_name: str, site_id: str, site_category:
         "bom": bom,
         "emails_sent": [e1["file"], e2["file"], e3["file"]],
     }
+# Adding multi agent workflow to orchastrator
+def plan_multi_site_rollout(
+    project_name: str,
+    full_sites: int = 0,
+    upgrades: int = 0,
+    partial_sites: int = 0,
+    start_date: str = "2026-12-01",
+) -> dict:
+    """
+    Schedules a multi-site rollout across available days (max 5 sites/day with 5 Subcons & 5 Engineers),
+    aggregates total BOM demand, and returns a rollout summary.
+    """
+    site_queue = (
+        [("full_site", i + 1) for i in range(full_sites)]
+        + [("upgrade", i + 1) for i in range(upgrades)]
+        + [("partial_site", i + 1) for i in range(partial_sites)]
+    )
 
+    if not site_queue:
+        return {"status": "FAILED", "reason": "No sites requested."}
+
+    current_date = datetime.strptime(start_date, "%Y-%m-%d")
+    scheduled_count = 0
+    aggregated_bom = {}
+    sample_work_orders = []
+
+    for idx, (category, _) in enumerate(site_queue, start=1):
+        site_id = f"SITE-{idx:03d}"
+
+        while not get_available_team(current_date.strftime("%Y-%m-%d"))["available"]:
+            current_date += timedelta(days=1)
+
+        date_str = current_date.strftime("%Y-%m-%d")
+        res = create_work_order_and_notify(project_name, site_id, category, date_str)
+        if res["status"] == "PLANNED":
+            scheduled_count += 1
+            if len(sample_work_orders) < 5:
+                sample_work_orders.append({
+                    "work_order_id": res["work_order_id"],
+                    "site_id": site_id,
+                    "category": category,
+                    "date": date_str,
+                    "team": f"{res['subcon_id']} + {res['engineer_id']}",
+                })
+            for item in res["bom"]:
+                sku = item["sku"]
+                if sku not in aggregated_bom:
+                    aggregated_bom[sku] = {"sku": sku, "qty": 0, "serialized": item["serialized"]}
+                aggregated_bom[sku]["qty"] += item["qty"]
+
+    return {
+        "status": "ROLLOUT_PLANNED",
+        "project_name": project_name,
+        "total_sites_scheduled": scheduled_count,
+        "start_date": start_date,
+        "end_date": current_date.strftime("%Y-%m-%d"),
+        "aggregated_bom": list(aggregated_bom.values()),
+        "sample_work_orders": sample_work_orders,
+    }
 
 if __name__ == "__main__":
     # Quick test: schedule two sites on the same date to verify conflict-free team assignment
