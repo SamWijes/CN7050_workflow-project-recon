@@ -1,0 +1,21 @@
+TELECOM FIELD EXECUTION & FAULT REPLACEMENT MANUAL (REV 2026)
+
+FAULT-101: Radio Unit (RU) Power Failure / Dead on Arrival (DOA).
+Severity: Critical.
+Action: Quarantine the defective unit, record serial number in field log, and trigger an immediate direct replenishment request to the Inventory & Sourcing Agent.
+
+FAULT-102: Baseband Unit (BBU) Optical Port Failure.
+Severity: Critical.
+Action: Log serial number, move to quarantine, and trigger direct replacement dispatch via Inventory & Sourcing Agent.
+
+FAULT-103: Fiber Patch Cord Attenuation or Connector Damage.
+Severity: Minor.
+Action: Replace on-site using standard subcontractor consumable kit. No warehouse replenishment required.
+
+FAULT-104: Antenna Mounting Bracket Corrosion / Misalignment.
+Severity: Moderate.
+Action: If structural damage is confirmed, log photo evidence and request replacement bracket from warehouse. Minor alignment issues must be resolved on-site.
+
+FAULT-105: GPS Module Sync Timeout.
+Severity: Minor.
+Action: Perform firmware reset and verify sky view. Only trigger hardware replenishment if unit fails after 2 consecutive resets.

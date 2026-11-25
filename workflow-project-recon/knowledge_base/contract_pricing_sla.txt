@@ -1,0 +1,10 @@
+TELECOM PROJECT CONTRACT PRICING & SLA SCHEDULE (2026)
+
+SKU-RU-5G: 5G Radio Unit (Standard). Contract Unit Rate: £2,450.00. Max Allowed Variance: 0%.
+SKU-BBU-01: Baseband Unit. Contract Unit Rate: £3,100.00. Max Allowed Variance: 0%.
+SKU-ANT-04: Sector Antenna (Tri-band). Contract Unit Rate: £850.00. Max Allowed Variance: 2%.
+SKU-FBR-10: Fiber Patch Cord (10m). Contract Unit Rate: £25.00 (Covered under consumable allowance up to 10 units/site).
+
+LABOR-INSTALL-5G: Standard 5G Site Installation Labor. Fixed Rate: £1,800.00 per site.
+SLA-RECON-01: Three-way reconciliation rule strictly requires Quantity Dispatched = Quantity Installed + Quantity Quarantined before any invoice is routed for client sign-off.
+SLA-BILLING-02: Any invoice line item exceeding the contracted unit rate by more than the allowed variance must be flagged as a billing anomaly and held for Key Accounts Manager review.
