@@ -1,0 +1,73 @@
+{
+  "full_site": [
+    {
+      "sku": "SKU-RU-5G",
+      "qty": 3,
+      "serialized": true
+    },
+    {
+      "sku": "SKU-BBU-01",
+      "qty": 1,
+      "serialized": true
+    },
+    {
+      "sku": "SKU-ANT-04",
+      "qty": 3,
+      "serialized": true
+    },
+    {
+      "sku": "SKU-FBR-10",
+      "qty": 10,
+      "serialized": false
+    },
+    {
+      "sku": "SKU-UPVC-20",
+      "qty": 50,
+      "serialized": false
+    },
+    {
+      "sku": "SKU-CBL-TIE",
+      "qty": 10,
+      "serialized": false
+    }
+  ],
+  "partial_site": [
+    {
+      "sku": "SKU-RU-5G",
+      "qty": 1,
+      "serialized": true
+    },
+    {
+      "sku": "SKU-ANT-04",
+      "qty": 1,
+      "serialized": true
+    },
+    {
+      "sku": "SKU-FBR-10",
+      "qty": 4,
+      "serialized": false
+    },
+    {
+      "sku": "SKU-UPVC-20",
+      "qty": 20,
+      "serialized": false
+    }
+  ],
+  "upgrade": [
+    {
+      "sku": "SKU-RU-5G",
+      "qty": 2,
+      "serialized": true
+    },
+    {
+      "sku": "SKU-FBR-10",
+      "qty": 6,
+      "serialized": false
+    },
+    {
+      "sku": "SKU-CBL-TIE",
+      "qty": 4,
+      "serialized": false
+    }
+  ]
+}

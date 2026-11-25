@@ -1,0 +1,8 @@
+To: engineer.a@intellicommstech.local (ENGINEER)
+Date: 2026-11-25 02:02:30
+Subject: Site Supervision & App Confirmation: WO-SITE-104-20261201 (SITE-104)
+--------------------------------------------------
+Hello Engineer-A,
+
+You are assigned to supervise SITE-104 on 2026-12-01 with Subcon-A.
+Please verify material receipt, log any faulty units, and submit installation confirmation via the Field App.

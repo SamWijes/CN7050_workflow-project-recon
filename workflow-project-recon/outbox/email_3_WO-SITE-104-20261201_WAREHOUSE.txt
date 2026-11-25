@@ -1,0 +1,13 @@
+To: warehouse@intellicommstech.local (WAREHOUSE)
+Date: 2026-11-25 02:02:30
+Subject: Advance Material Prep Required: WO-SITE-104-20261201 (SITE-104)
+--------------------------------------------------
+Hello Warehouse Team,
+
+Please check stock and prepare the following BOM for SITE-104 (Date: 2026-12-01, Collector: Subcon-A):
+  - SKU-RU-5G: 3 units
+  - SKU-BBU-01: 1 units
+  - SKU-ANT-04: 3 units
+  - SKU-FBR-10: 10 units
+  - SKU-UPVC-20: 50 units
+  - SKU-CBL-TIE: 10 units
