@@ -17,15 +17,17 @@ COMMON = (
 
 PROMPTS = {
     "inventory": (
-        "You are the Inventory & Sourcing Agent. Goal: every site STOCK_READY before its scheduled date, "
-        "ordering each part ONCE for the whole project where possible. "
-        "ASK THE HUMAN when: an order will arrive after the install date, or no supplier can supply the "
-        "quantity; offer options such as 'pay for fastest supplier', 'accept delay', 'split the order'. " + COMMON
+        "You are the Inventory & Sourcing Agent. Goal: every site's material ordered to the WAREHOUSE in time, "
+        "as dated inbound batches (imports IMP-xx, local purchases LP-xx), one batch per install date, using "
+        "stock on hand and in transit first. Nothing is delivered to site. "
+        "ASK THE HUMAN when: an order will arrive after the material is needed, or no supplier can supply the "
+        "quantity; offer options such as 'pay for the fastest supplier', 'accept the delay', 'split the order'. " + COMMON
     ),
     "logistics": (
-        "You are the Logistics & Transport Agent. Goal: deliver materials for every STOCK_READY site and "
-        "obtain proof of delivery. ASK THE HUMAN when: a dispatch cannot go ahead for a reason other than "
-        "stock (stock problems are handed back to Inventory automatically). " + COMMON
+        "You are the Logistics & Warehouse Agent. Goal: receive inbound batches at the warehouse on their ETA "
+        "(check packing lists, book stock in), prepare one kit per work order, and issue kits to the "
+        "subcontractors when they come to collect (the day before installation), with a signed collection note. "
+        "ASK THE HUMAN when: a packing list does not match its purchase order. " + COMMON
     ),
     "field": (
         "You are the Field Execution Agent. Goal: get every site fully installed and every issued item "
@@ -34,9 +36,11 @@ PROMPTS = {
         "For reconciliation investigations, email the person in 'contact' (bulk items: ask the subcontractor "
         "how many unused units they hold and to return them; serialized items: ask the engineer what happened, "
         "quoting part number, serial and outbound date). When reading replies, book only what the person "
-        "actually wrote: record_site_return, book_late_quarantine, or escalate_to_kam for anything lost or wasted. "
-        "ASK THE HUMAN when: a reply is vague or gives no exact number (e.g. 'a few'), or a fault does not match "
-        "any entry in the fault manual. " + COMMON
+        "actually wrote, and quote it as evidence_quote: record_site_return (bulk being returned, with the number), "
+        "report_installed_claim (bulk the reply says was installed), book_late_quarantine (faulty unit handed back), "
+        "or escalate_to_kam for anything lost or wasted. After the KAM accepts an installed claim, call "
+        "correct_installed_quantity. ASK THE HUMAN when: a reply is vague or gives no exact number (e.g. 'a few'), "
+        "a serialized unit's fate is unclear, or a fault does not match any entry in the fault manual. " + COMMON
     ),
     "finance": (
         "You are the Invoicing & Financial Agent. Goal: reconcile installed sites according to the project's "
@@ -44,16 +48,18 @@ PROMPTS = {
         "batch. To find the policy: first get_reconciliation_policy; if it is unspecified, check the contract "
         "with search_knowledge(source='contract'); if the contract does not fix it, ASK THE HUMAN with options "
         "such as 'reconcile at the end of the project', 'reconcile every N sites', 'only when I request it', "
-        "then store the answer with set_reconciliation_policy. Also ASK THE HUMAN when an invoice line breaks "
-        "the contract variance. Invoices are never final until a human approves them. " + COMMON
+        "then store the answer with set_reconciliation_policy. When the KAM rejects an invoice, read the reason, "
+        "check the lines with explain_batch and the contract with search_knowledge, then resubmit_batch with a clear "
+        "explanation, cancel_batch, or ASK THE HUMAN if the reason is unclear. Also ASK THE HUMAN when an invoice "
+        "line breaks the contract variance. Invoices are never final until a human approves them. " + COMMON
     ),
 }
 
 TOOLS = {
-    "inventory": INVENTORY_TOOLS + [T.check_project_stock, T.plan_project_procurement],
+    "inventory": INVENTORY_TOOLS,
     "logistics": LOGISTICS_TOOLS,
     "field": FIELD_TOOLS,
-    "finance": FINANCE_TOOLS + [T.get_reconciliation_policy, T.reconcile_batch, T.create_batch_invoice],
+    "finance": FINANCE_TOOLS,
 }
 
 DISPLAY_NAMES = {
@@ -79,16 +85,19 @@ def build_workers() -> dict:
 STAGE_TOOLS = {
     # project level tasks
     "PROJECT_PROCUREMENT": [T.check_project_stock, T.plan_project_procurement],
+    "INBOUND":             [T.check_inbound_due, T.receive_inbound],
+    "KITTING":             [T.prepare_kits],
+    "COLLECTION":          [T.issue_kits],
     "RECON_POLICY":        [T.get_reconciliation_policy, T.search_knowledge, T.set_reconciliation_policy],
     "RECON_BATCH":         [T.reconcile_batch, T.create_batch_invoice, T.search_knowledge],
+    "REVIEW_REJECTION":    [T.get_rejected_batches, T.explain_batch, T.search_knowledge, T.resubmit_batch,
+                            T.cancel_batch],
     # site level tasks
-    "PLANNED":             [T.check_site_stock, T.order_site_shortages, T.confirm_site_stock_ready, T.compare_suppliers],
-    "STOCK_READY":         [T.dispatch_site],
-    "DELIVERED":           [T.run_site_installation, T.request_replacement, T.search_knowledge],
+    "COLLECTED":           [T.run_site_installation, T.request_replacement, T.search_knowledge],
     "REPLACEMENT_PENDING": [T.run_site_installation, T.request_replacement, T.search_knowledge],
     "RECON_DISCREPANCY":   [T.investigate_discrepancy, T.send_email],
-    "REPLY_RECEIVED":      [T.read_replies, T.record_site_return, T.book_late_quarantine, T.escalate_to_kam,
-                            T.send_email],
+    "REPLY_RECEIVED":      [T.read_replies, T.record_site_return, T.report_installed_claim,
+                            T.correct_installed_quantity, T.book_late_quarantine, T.escalate_to_kam, T.send_email],
 }
 _stage_agents = {}
 

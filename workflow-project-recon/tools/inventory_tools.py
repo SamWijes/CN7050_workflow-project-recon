@@ -6,10 +6,9 @@ WMS_DB = "databases/wms_inventory.db"
 SUPPLIERS_DB = "databases/suppliers.db"
 LOGISTICS_DB = "databases/logistics_transport.db"
 
-
 def _today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
-
+    from tools.clock import today
+    return today()
 
 def get_sku_description(sku: str) -> str:
     conn = sqlite3.connect(WMS_DB)
@@ -52,7 +51,7 @@ def query_suppliers(sku: str, qty_needed: int) -> list:
     return [dict(zip(keys, r)) for r in rows]
 
 
-def create_purchase_order(supplier_id: str, sku: str, qty: int) -> dict:
+def create_purchase_order(supplier_id: str, sku: str, qty: int, order_date: str = None) -> dict:
     """Creates a PO and deducts the ordered qty from supplier stock."""
     conn = sqlite3.connect(SUPPLIERS_DB)
     cur = conn.cursor()
@@ -71,7 +70,7 @@ def create_purchase_order(supplier_id: str, sku: str, qty: int) -> dict:
         INSERT INTO purchase_orders
         (po_id, supplier_id, supplier_name, supplier_type, sku, qty_ordered, total_cost_gbp, status, order_date)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'ORDERED', ?)
-    """, (po_id, supplier_id, supplier_name, supplier_type, sku, qty, total_cost, _today()))
+    """, (po_id, supplier_id, supplier_name, supplier_type, sku, qty, total_cost, order_date or _today()))
     cur.execute("UPDATE supplier_catalog SET stock_available = stock_available - ? WHERE supplier_id = ? AND sku = ?",
                 (qty, supplier_id, sku))
     conn.commit()

@@ -9,6 +9,11 @@ INVOICES_DIR = "invoices"
 os.makedirs(INVOICES_DIR, exist_ok=True)
 
 
+
+def _business_today() -> str:
+    from tools.clock import today
+    return today()
+
 def run_three_way_reconciliation(work_order_id: str) -> dict:
     """
     Per SKU on a work order:
@@ -19,7 +24,8 @@ def run_three_way_reconciliation(work_order_id: str) -> dict:
     """
     conn = sqlite3.connect(ORCHESTRATOR_DB)
     rows = conn.execute("""
-        SELECT id, site_id, sku, serialized, qty_planned, qty_dispatched, qty_installed, qty_quarantined, qty_returned
+        SELECT id, site_id, sku, serialized, qty_planned, qty_dispatched, qty_installed, qty_quarantined, qty_returned,
+               qty_written_off
         FROM reconciliation_ledger WHERE work_order_id = ?
     """, (work_order_id,)).fetchall()
     if not rows:
@@ -29,22 +35,23 @@ def run_three_way_reconciliation(work_order_id: str) -> dict:
     delivered = get_delivered_quantities(work_order_id)
     line_items, discrepancies = [], []
 
-    for row_id, site_id, sku, serialized, planned, dispatched, installed, quarantined, returned in rows:
+    for row_id, site_id, sku, serialized, planned, dispatched, installed, quarantined, returned, written_off in rows:
         issues = []
         if delivered.get(sku, 0) != dispatched:
-            issues.append(f"carrier delivered {delivered.get(sku, 0)} but WMS dispatched {dispatched}")
-        unaccounted = dispatched - (installed + quarantined + returned)
+            issues.append(f"collection notes show {delivered.get(sku, 0)} collected but WMS issued {dispatched}")
+        unaccounted = dispatched - (installed + quarantined + returned + written_off)
         if unaccounted != 0:
-            issues.append(f"{unaccounted} unaccounted (dispatched {dispatched}, installed {installed}, "
-                          f"quarantined {quarantined}, returned {returned})")
+            issues.append(f"{unaccounted} unaccounted (issued {dispatched}, installed {installed}, "
+                          f"quarantined {quarantined}, returned {returned}, written off {written_off})")
         if serialized and installed != planned:
             issues.append(f"installed {installed} of {planned} planned")
 
         status = "RECONCILED" if not issues else "DISCREPANCY"
         conn.execute("UPDATE reconciliation_ledger SET reconciliation_status = ? WHERE id = ?", (status, row_id))
         entry = {"sku": sku, "serialized": bool(serialized), "planned": planned, "dispatched": dispatched,
-                 "delivered": delivered.get(sku, 0), "installed": installed, "quarantined": quarantined,
-                 "returned": returned, "unaccounted": unaccounted, "status": status, "issues": issues}
+            "collected": delivered.get(sku, 0), "installed": installed, "quarantined": quarantined,
+            "returned": returned, "written_off": written_off, "unaccounted": unaccounted,
+            "status": status, "issues": issues}
         line_items.append(entry)
         if issues:
             discrepancies.append(entry)
@@ -109,7 +116,7 @@ def generate_client_invoice(work_order_id: str) -> dict:
 
     invoice = {"invoice_id": invoice_id, "work_order_id": work_order_id, "site_id": recon["site_id"],
                "site_category": category, "work_completed_date": sched,
-               "created_date": datetime.now().strftime("%Y-%m-%d"), "currency": "GBP", "lines": lines,
+               "created_date": _business_today(), "currency": "GBP", "lines": lines,
                "subtotal_gbp": subtotal, "vat_20pct_gbp": vat, "grand_total_gbp": round(subtotal + vat, 2),
                "billing_anomalies": anomalies, "status": status}
     filepath = os.path.join(INVOICES_DIR, f"{invoice_id}.json")

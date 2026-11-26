@@ -155,6 +155,7 @@ def setup_orchestrator_db(force_reset: bool = False):
         qty_installed INTEGER DEFAULT 0,
         qty_quarantined INTEGER DEFAULT 0,
         qty_returned INTEGER DEFAULT 0,
+        qty_written_off INTEGER DEFAULT 0,
         reconciliation_status TEXT DEFAULT 'PENDING',
         UNIQUE(work_order_id, sku),
         FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id)

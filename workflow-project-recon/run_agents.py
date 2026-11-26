@@ -7,6 +7,9 @@ Run the LangGraph multi agent system from the terminal.
     python run_agents.py --reset --scenarios SITE-002=qty_mismatch_vague,SITE-003=faulty_lost
     python run_agents.py --reset --kam "2 full sites and 1 upgrade from 2026-12-01, reconcile every 2 sites"
     python run_agents.py --reset --auto --auto-answer "every 2 sites"
+    python run_agents.py --reset --faults demo            # background faults: demo (first BBU on SITE-001) | random
+    python run_agents.py --reset --kickoff 3              # project starts 3 days before the first install (tight)
+    python run_agents.py --reset --auto --reject-first "Labour rate looks wrong"   # demo the rejection loop
     python run_agents.py request-recon UK-5G-Phase2       # ask for a reconciliation while a run is going
     python run_agents.py ask inventory "How many BBU-01 are in stock?"
 """
@@ -28,6 +31,9 @@ KAM_REQUEST = ("Prepare and execute project 'UK-5G-Phase2': 3 full sites, 2 upgr
 
 def _arg(name: str):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else None
+
+
+_rejected_once = []
 
 
 def handle_pause(payload: dict, auto: bool, auto_answer: str = None) -> dict:
@@ -63,13 +69,37 @@ def handle_pause(payload: dict, auto: bool, auto_answer: str = None) -> dict:
     for b in payload.get("batches", []):
         flag = "  ANOMALIES FLAGGED" if b["has_anomalies"] else ""
         print(f"\nConsolidated invoice {b['batch_id']}  £{b['total_gbp']:,.2f}  sites: {', '.join(b['work_orders'])}{flag}")
+        if b.get("revises"):
+            print(f"  Resubmission of {b['revises']}. Finance Agent says: {b.get('agent_note')}")
+        reject_first = _arg("--reject-first")
+        if auto and reject_first and not _rejected_once:
+            _rejected_once.append(b["batch_id"])
+            print(f"  -> auto REJECT: {reject_first}")
+            decisions["batches"][b["batch_id"]] = {"verdict": "reject", "reason": reject_first}
+            continue
         answer = "y" if auto else input("  Approve this batch? [y/n]: ").strip().lower()
-        decisions["batches"][b["batch_id"]] = "approve" if answer == "y" else "reject"
+        if answer == "y":
+            decisions["batches"][b["batch_id"]] = "approve"
+        else:
+            reason = input("  Reason for rejecting (the Finance Agent will act on it): ").strip() or "no reason given"
+            decisions["batches"][b["batch_id"]] = {"verdict": "reject", "reason": reason}
 
+    escalation_options = ["Write off the missing items and invoice the site",
+                          "Chase again for the missing items",
+                          "Close the site without invoicing"]
     for esc in payload.get("escalations", []):
-        print(f"\nEscalation {esc['work_order_id']}  status {esc['status']}")
-        note = "KAM reviewed: write off and raise with subcontractor" if auto else input("  Decision / note: ").strip()
-        decisions["escalations"][esc["work_order_id"]] = note or "noted"
+        print(f"\nEscalation {esc['work_order_id']} raised by {esc['raised_by']}")
+        print(f"  Reason: {esc['reason']}")
+        for f in esc["facts"]:
+            print(f"  - {f['sku']} {f['description']}: {f['unaccounted_qty']} unaccounted")
+        for i, opt in enumerate(escalation_options, 1):
+            print(f"    {i}. {opt}")
+        if auto:
+            choice = escalation_options[0]
+        else:
+            raw = input("  Your decision (number or text): ").strip()
+            choice = escalation_options[int(raw) - 1] if raw.isdigit() and 0 < int(raw) <= 3 else raw
+        decisions["escalations"][esc["work_order_id"]] = choice
 
     if payload.get("installed_awaiting_reconciliation"):
         sites = payload["installed_awaiting_reconciliation"]
@@ -93,7 +123,7 @@ if __name__ == "__main__":
     else:
         init_all_databases()
 
-    SIM["field_mode"] = "random" if "--random" in sys.argv else "demo"
+    SIM["field_mode"] = _arg("--faults") or ("random" if "--random" in sys.argv else "clean")
     SIM["site_scenarios"] = DEMO_ASSIGNMENT if "--scenario-demo" in sys.argv else parse_assignment(_arg("--scenarios") or "")
     auto = "--auto" in sys.argv
     kam = _arg("--kam") or KAM_REQUEST
@@ -104,7 +134,7 @@ if __name__ == "__main__":
     thread_id = f"{PROJECT}-{uuid.uuid4().hex[:6]}"
     print(f"Thread: {thread_id}")
 
-    result = start_project(graph, kam, PROJECT, thread_id)
+    result = start_project(graph, kam, PROJECT, thread_id, kickoff_days=int(_arg("--kickoff") or 7))
     while (payload := pending_interrupt(result)) is not None:
         result = resume_project(graph, thread_id, handle_pause(payload, auto, _arg("--auto-answer")))
 

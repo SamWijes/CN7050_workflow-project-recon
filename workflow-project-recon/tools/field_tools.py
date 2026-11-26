@@ -40,7 +40,7 @@ def simulate_field_app_report(work_order_id: str, site_id: str, engineer_id: str
         sku, sn = item["sku"], item.get("serial_number")
         faulty = False
         if sn:
-            if mode == "demo" and sku == DEMO_FAULT_SKU and not demo_done:
+            if mode == "demo" and sku == DEMO_FAULT_SKU and not demo_done and site_id.endswith("001"):
                 faulty, demo_done = True, True
             elif mode == "random" and rng.random() < 0.10:
                 faulty = True

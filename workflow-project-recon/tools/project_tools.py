@@ -7,10 +7,10 @@ from datetime import datetime, timedelta
 from tools.orchestrator_tools import ORCHESTRATOR_DB, get_work_order_bom, record_ledger_quantity
 from tools.inventory_tools import (check_bom_stock, query_suppliers, create_purchase_order,
                                    verify_and_inbound_packing_list, dispatch_bom_from_wms)
-from tools.logistics_tools import schedule_inbound_shipment, create_outbound_waybill, confirm_site_delivery
+from tools.logistics_tools import schedule_inbound_shipment, record_collection, tag_shipment
+from tools.clock import today as business_today
 from tools.field_tools import simulate_field_app_report, process_field_report
 from tools.finance_tools import generate_client_invoice
-
 
 def get_project_work_orders(project_name: str) -> list:
     conn = sqlite3.connect(ORCHESTRATOR_DB)
@@ -32,28 +32,41 @@ def choose_supplier(suppliers: list, need_by: str, order_date: str) -> dict:
     return min(suppliers, key=lambda s: s["lead_time_days"])
 
 def source_shortage(sku: str, qty: int, serialized: bool, need_by: str, order_date: str = None,
-                    supplier_id: str = None) -> dict:
-    """PO -> inbound shipment -> packing list check -> stock booked in. supplier_id lets an agent pick."""
-    order_date = order_date or datetime.now().strftime("%Y-%m-%d")
+                    supplier_id: str = None, receive_now: bool = True, batch_no=None,
+                    project_name: str = None) -> dict:
+    """PO -> inbound shipment with an ETA. supplier_id lets an agent pick.
+    receive_now=True books the stock in immediately (deterministic main.py); the agents use False, so the
+    stock only exists once Logistics receives the shipment on its ETA date."""
+    order_date = order_date or business_today()
     suppliers = query_suppliers(sku, qty)
     if not suppliers:
         return {"sku": sku, "status": "FAILED", "reason": f"No supplier can supply {qty} of {sku}"}
     chosen = next((s for s in suppliers if s["supplier_id"] == supplier_id), None) if supplier_id else None
     chosen = chosen or choose_supplier(suppliers, need_by, order_date)
-    po = create_purchase_order(chosen["supplier_id"], sku, qty)
+    po = create_purchase_order(chosen["supplier_id"], sku, qty, order_date=order_date)
     if po["status"] != "ORDERED":
         return {"sku": sku, "status": "FAILED", "reason": po["reason"]}
 
-    arrival = (datetime.strptime(order_date, "%Y-%m-%d") + timedelta(days=chosen["lead_time_days"])).strftime("%Y-%m-%d")
+    earliest = (datetime.strptime(order_date, "%Y-%m-%d") + timedelta(days=chosen["lead_time_days"])).strftime("%Y-%m-%d")
+    arrival = max(earliest, need_by) if not receive_now else earliest   # requested delivery date when feasible
     # Pallet space scales with quantity (10 serialized units or 500 bulk units per pallet)
     pallets = max(0.05, round(qty / (10 if serialized else 500), 2))
     ship = schedule_inbound_shipment(po["po_id"], pallets, arrival, serialized)
     if ship["status"] != "CLEARED_AND_SCHEDULED":
         return {"sku": sku, "po_id": po["po_id"], "status": ship["status"], "reason": ship.get("reason")}
+    kind = "IMPORT" if chosen["supplier_type"] == "INTERNAL" else "LOCAL_PURCHASE"
+    # Batch reference: IMP-01 / LP-01 for planned batches, or a free label such as REP-<work order>
+    batch_ref = None
+    if batch_no is not None:
+        batch_ref = batch_no if isinstance(batch_no, str) else f"{'IMP' if kind == 'IMPORT' else 'LP'}-{batch_no:02d}"
+        tag_shipment(ship["shipment_id"], batch_ref, project_name)
+    result = {"sku": sku, "qty": qty, "po_id": po["po_id"], "supplier": chosen["supplier_name"], "kind": kind,
+              "unit_price_gbp": chosen["unit_price_gbp"], "arrival_date": arrival, "batch_ref": batch_ref,
+              "shipment_id": ship["shipment_id"], "late": earliest > need_by}
+    if not receive_now:
+        return {**result, "status": "IN_TRANSIT"}
     inbound = verify_and_inbound_packing_list(ship["shipment_id"], ship["packing_list"], txn_date=arrival)
-    return {"sku": sku, "qty": qty, "po_id": po["po_id"], "supplier": chosen["supplier_name"],
-            "unit_price_gbp": chosen["unit_price_gbp"], "arrival_date": arrival,
-            "late": arrival > need_by, "status": inbound["status"]}
+    return {**result, "status": inbound["status"]}
 
 
 def source_and_inbound_project_shortages(project_name: str) -> dict:
@@ -78,17 +91,22 @@ def source_and_inbound_project_shortages(project_name: str) -> dict:
     return {"status": "SHORTAGES_RESOLVED" if not failed else "SHORTAGES_PARTIAL",
             "shortages_resolved": resolved, "failed": failed}
 
+def issue_from_warehouse(wo: dict, bom: list, collector: str, collected_at: str = None) -> dict:
+    """The subcontractor (main kit) or engineer (replacement) collects from the warehouse:
+    WMS outbound -> ledger -> collection note signed by the collector."""
+    collected_at = collected_at or business_today()
+    issue = dispatch_bom_from_wms(wo["work_order_id"], wo["site_id"], bom, collector, txn_date=collected_at)
+    if issue["status"] != "DISPATCHED":
+        return issue
+    record_ledger_quantity(wo["work_order_id"], issue["items"], "qty_dispatched")
+    record_collection(wo["work_order_id"], issue["items"], collector, collected_at)
+    issue["collected_by"] = collector
+    return issue
 
+
+# Older name, still used by main.py
 def dispatch_and_deliver(wo: dict, bom: list, collector: str) -> dict:
-    """WMS dispatch -> ledger -> waybill -> proof of delivery on site."""
-    dispatch = dispatch_bom_from_wms(wo["work_order_id"], wo["site_id"], bom, collector, txn_date=wo["scheduled_date"])
-    if dispatch["status"] != "DISPATCHED":
-        return dispatch
-    record_ledger_quantity(wo["work_order_id"], dispatch["items"], "qty_dispatched")
-    waybill = create_outbound_waybill(wo["work_order_id"], wo["site_id"], dispatch["items"], wo["scheduled_date"])
-    confirm_site_delivery(waybill["waybill_id"], wo["engineer_id"], wo["scheduled_date"])
-    dispatch["waybill_id"] = waybill["waybill_id"]
-    return dispatch
+    return issue_from_warehouse(wo, bom, collector, wo["scheduled_date"])
 
 
 def execute_site(wo: dict, field_mode: str = "demo") -> dict:

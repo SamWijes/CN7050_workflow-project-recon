@@ -1,13 +1,16 @@
 """
 LangGraph orchestration layer.
 
-    START -> planner -> supervisor <-> {inventory, logistics, field, finance, human_review} -> finish -> END
+    START -> planner -> supervisor <-> {inventory, logistics, field, finance, human_review, advance_calendar}
+                                     -> finish -> END
 
-The supervisor (Main Orchestrator) looks at the live state of every site and decides at runtime which
-agent works next. Sites move independently. Procurement runs once for the whole project; reconciliation
-runs in batches according to the project's policy (from the KAM request, the contract, or by asking the
-KAM) or whenever a human requests it. Any agent can ask a human a question: that site (or task) pauses,
-the graph interrupts, and the same agent acts on the answer when the graph resumes.
+The supervisor (Main Orchestrator) looks at the live state of every site and the business date, and decides
+at runtime which agent works next. Work is gated by date: inbound batches are received on their ETA, kits are
+collected the day before installation, installation happens on the install date. When nobody can act and
+nothing waits for a human, the business calendar jumps to the next event.
+
+Any agent can ask a human: that site (or task) pauses, the graph interrupts, and the same agent acts on the
+answer when the graph resumes. Questions for humans are always raised before other work.
 """
 import operator
 import sqlite3
@@ -22,53 +25,52 @@ from pydantic import BaseModel, Field
 from agents.llm import get_llm, get_structured_llm
 from agents.events import log_event
 from agents.workers import build_workers, get_stage_agent, DISPLAY_NAMES
+from agents.agent_tools import replacement_in_transit
 from agents import hitl
+from tools import clock
 from tools.orchestrator_tools import ORCHESTRATOR_DB, plan_multi_site_rollout, set_work_order_status
 from tools.project_tools import get_project_work_orders
 from tools.mailbox_tools import awaiting_replies
+from tools.logistics_tools import due_shipments, next_shipment_date
 
 CHECKPOINT_DB = "databases/graph_checkpoints.db"
-MAX_STEPS = 60          # hard stop for the supervisor loop
-MAX_ATTEMPTS = 3        # same site stuck at the same stage this many times -> human
+MAX_STEPS = 150         # hard stop for the supervisor loop (calendar jumps included)
+MAX_ATTEMPTS = 3        # same task stuck in the same state this many times -> human
 MAX_NUDGES = 2
 
-POLICY_TASK = "PROJECT:RECON_POLICY"   # pseudo work order id for project level tasks
+# Project level tasks (pseudo work order ids)
+T_POLICY, T_REJECTIONS = "PROJECT:RECON_POLICY", "PROJECT:REJECTIONS"
+T_PROCUREMENT = "PROJECT:PROCUREMENT"
+T_INBOUND, T_KITTING, T_COLLECTION = "PROJECT:INBOUND", "PROJECT:KITTING", "PROJECT:COLLECTION"
+TASK_KEY = {T_POLICY: "RECON_POLICY", T_REJECTIONS: "REVIEW_REJECTION", T_PROCUREMENT: "PROJECT_PROCUREMENT",
+            T_INBOUND: "INBOUND", T_KITTING: "KITTING", T_COLLECTION: "COLLECTION"}
 
-# Which agent moves a site forward from each stage (INSTALLED / RECONCILED are batched separately)
-STAGE_OWNER = {
-    "PLANNED": "inventory",
-    "STOCK_READY": "logistics",
-    "DELIVERED": "field",
-    "REPLACEMENT_PENDING": "field",
-    "RECON_DISCREPANCY": "field",
-    "REPLY_RECEIVED": "field",
-    "AWAITING_SIGNOFF": "human_review",
-    "AWAITING_REPLY": "human_review",
-    "AWAITING_HUMAN_ANSWER": "human_review",
-    "NEEDS_ATTENTION": "human_review",
-}
-TERMINAL = {"CLOSED", "INVOICE_REJECTED", "ESCALATED"}
-BEFORE_INSTALL = {"PLANNED", "STOCK_READY", "DISPATCHING", "DELIVERED", "INSTALLING", "REPLACEMENT_PENDING"}
+HUMAN_STAGES = {"AWAITING_SIGNOFF", "AWAITING_REPLY", "AWAITING_HUMAN_ANSWER", "NEEDS_ATTENTION"}
+TERMINAL = {"CLOSED", "ESCALATED", "INVOICE_CANCELLED"}
+BEFORE_INSTALL = {"PLANNED", "ON_ORDER", "STOCK_READY", "KIT_READY", "COLLECTING", "COLLECTED", "INSTALLING",
+                  "REPLACEMENT_PENDING"}
 PIPELINE_ORDER = ["inventory", "logistics", "field", "finance", "human_review"]
 
 # What "done" means for each task, spelled out for a small model
 STAGE_GOALS = {
-    "PROJECT_PROCUREMENT": "Call check_project_stock, then plan_project_procurement once for the whole project. "
-                           "If it reports late or failed orders, ask_human what to do.",
+    "PROJECT_PROCUREMENT": "Call check_project_stock, then plan_project_procurement once. If it reports conflicts "
+                           "(lines held because they cannot arrive in time), ask_human with options. If you have the "
+                           "KAM's answer, call plan_project_procurement with strategy 'fastest' or 'accept_delay'.",
+    "INBOUND": "Call receive_inbound to receive everything due at the warehouse today.",
+    "KITTING": "Call prepare_kits to stage a kit for every STOCK_READY site.",
+    "COLLECTION": "Call issue_kits to hand today's kits to the subcontractors collecting them.",
     "RECON_POLICY": "Call get_reconciliation_policy. If unspecified, search_knowledge(source='contract') for the "
                     "billing frequency rule. If the contract does not fix it, ask_human with options. If you have "
                     "the KAM's answer, call set_reconciliation_policy with it.",
     "RECON_BATCH": "Call reconcile_batch for these work orders, then create_batch_invoice for the reconciled ones.",
-    "PLANNED": "Make it STOCK_READY: check_site_stock, order_site_shortages if anything is short, then "
-               "confirm_site_stock_ready.",
-    "STOCK_READY": "Deliver it: call dispatch_site.",
-    "DELIVERED": "Install it: call run_site_installation, then request_replacement for each fault that "
-                 "needs a replacement.",
-    "REPLACEMENT_PENDING": "Call run_site_installation to list outstanding faults, then request_replacement "
-                           "for each one.",
+    "REVIEW_REJECTION": "Call get_rejected_batches, then explain_batch. Based on the KAM's reason, resubmit_batch with "
+                        "an explanation, cancel_batch, or ask_human if the reason is unclear.",
+    "COLLECTED": "Install it: call run_site_installation, then request_replacement for each fault that needs one.",
+    "REPLACEMENT_PENDING": "Call run_site_installation to list outstanding faults, then request_replacement for each.",
     "RECON_DISCREPANCY": "Call investigate_discrepancy, then send_email to the contact it gives you.",
-    "REPLY_RECEIVED": "Call read_replies, then record_site_return, book_late_quarantine or escalate_to_kam "
-                      "according to exactly what the reply says. If the reply is vague, ask_human.",
+    "REPLY_RECEIVED": "Call read_replies, then act on exactly what the reply says, quoting it as evidence_quote: "
+                      "record_site_return, report_installed_claim, book_late_quarantine or escalate_to_kam. If the "
+                      "reply is vague, ask_human. If the KAM accepted an installed claim, call correct_installed_quantity.",
 }
 
 
@@ -79,6 +81,7 @@ STAGE_GOALS = {
 class ProjectState(TypedDict, total=False):
     kam_request: str
     project_name: str
+    kickoff_days: int
     plan: dict
     next_agent: str
     task: dict
@@ -121,7 +124,6 @@ def _status(work_order_id: str) -> str:
 
 
 def _previously_reconciled(work_order_id: str) -> bool:
-    """A site that already went through reconciliation once (e.g. fixed after an investigation)."""
     conn = sqlite3.connect(ORCHESTRATOR_DB)
     n = conn.execute("SELECT COUNT(*) FROM reconciliation_ledger WHERE work_order_id = ? "
                      "AND reconciliation_status != 'PENDING'", (work_order_id,)).fetchone()[0]
@@ -135,7 +137,7 @@ def _due_for_reconciliation(project_name: str, sites: list) -> tuple:
     waiting = [s["work_order_id"] for s in sites if s["status"] in ("INSTALLED", "RECONCILED")]
     if not waiting:
         return [], [], policy
-    rechecks = [w for w in waiting if _previously_reconciled(w)]          # always reconcile again straight away
+    rechecks = [w for w in waiting if _previously_reconciled(w)]      # fixed sites are reconciled again at once
     fresh = [w for w in waiting if w not in rechecks]
     requests = hitl.open_recon_requests(project_name)
     requested = set()
@@ -149,60 +151,128 @@ def _due_for_reconciliation(project_name: str, sites: list) -> tuple:
     elif policy["policy"] == "every_n_sites":
         n = max(1, policy["every_n"])
         if len(fresh) >= n:
-            due |= set(sorted(fresh)[:n])            # exactly N sites per batch
+            due |= set(sorted(fresh)[:n])
         elif not still_installing:
-            due |= set(fresh)                        # final partial batch
+            due |= set(fresh)
     return sorted(due), [r["request_id"] for r in requests], policy
 
 
 def _work_options(project_name: str, sites: list) -> tuple:
-    """Who can act right now, and on what."""
+    """Who can act right now (given the business date), and on what."""
+    today = clock.today()
     options = {}
+
+    def add(agent, item):
+        if item not in options.setdefault(agent, []):
+            options[agent].append(item)
+
     for s in sites:
-        owner = STAGE_OWNER.get(s["status"])
-        if owner:
-            options.setdefault(owner, []).append(s["work_order_id"])
+        st, wo = s["status"], s["work_order_id"]
+        if st == "PLANNED":
+            add("inventory", T_PROCUREMENT)
+        elif st == "STOCK_READY":
+            add("logistics", T_KITTING)
+        elif st == "KIT_READY" and clock.collection_date(s["scheduled_date"]) <= today:
+            add("logistics", T_COLLECTION)
+        elif st == "COLLECTED" and s["scheduled_date"] <= today:
+            add("field", wo)
+        elif st == "REPLACEMENT_PENDING" and not replacement_in_transit(wo):
+            add("field", wo)
+        elif st in ("RECON_DISCREPANCY", "REPLY_RECEIVED"):
+            add("field", wo)
+        elif st in HUMAN_STAGES:
+            options.setdefault("human_review", [])
+    if due_shipments(today):
+        add("logistics", T_INBOUND)
 
     due, request_ids, policy = _due_for_reconciliation(project_name, sites)
-    installed = [s for s in sites if s["status"] in ("INSTALLED", "RECONCILED")]
     if policy["policy"] == "unspecified":
-        # Finance settles the policy early, in parallel with procurement, so the KAM is asked once up front
         if not hitl.has_open_project_question(project_name, DISPLAY_NAMES["finance"]):
-            options.setdefault("finance", []).append(POLICY_TASK)
+            add("finance", T_POLICY)
     elif due:
-        options.setdefault("finance", []).extend(due)
+        for w in due:
+            add("finance", w)
+    if hitl.rejected_batches(project_name):
+        add("finance", T_REJECTIONS)
 
-    if hitl.open_questions(project_name) or hitl.pending_batches(project_name):
+    if hitl.open_questions(project_name) or hitl.pending_batches(project_name) or hitl.open_escalations(project_name):
         options.setdefault("human_review", [])
-    # On request policy, nothing else left to do: ask the KAM whether to reconcile now
+    installed = [s for s in sites if s["status"] in ("INSTALLED", "RECONCILED")]
     if not options and installed and policy["policy"] == "on_request":
         options["human_review"] = []
     return options, request_ids
 
 
+def _next_event_date(project_name: str, sites: list):
+    """The next date on which something happens: an inbound ETA, a kit collection or an installation."""
+    today = clock.today()
+    dates = [next_shipment_date(today)]
+    for s in sites:
+        if s["status"] in ("STOCK_READY", "KIT_READY"):
+            dates.append(clock.collection_date(s["scheduled_date"]))
+        if s["status"] in ("COLLECTED", "STOCK_READY", "KIT_READY"):
+            dates.append(s["scheduled_date"])
+    future = [d for d in dates if d and d > today]
+    return min(future) if future else None
+
+
 def _site_table(sites: list) -> str:
-    return "\n".join(f"{s['work_order_id']} | {s['site_category']} | {s['scheduled_date']} | {s['status']}"
+    return "\n".join(f"{s['work_order_id']} | {s['site_category']} | install {s['scheduled_date']} | {s['status']}"
                      for s in sites)
 
 
+def _subjects(item: str, sites: list) -> str:
+    """What a task is working on right now, so 'stuck' means the same task on the same things."""
+    stage = {T_PROCUREMENT: ("PLANNED",), T_KITTING: ("STOCK_READY",), T_COLLECTION: ("KIT_READY",)}.get(item)
+    if stage:
+        return ",".join(s["work_order_id"] for s in sites if s["status"] in stage)
+    if item == T_INBOUND:
+        return ",".join(d["shipment_id"] for d in due_shipments(clock.today()))
+    status_of = {s["work_order_id"]: s["status"] for s in sites}
+    return status_of.get(item, "TASK")
+
+
 def _fallback(options: dict) -> RouteDecision:
-    """Deterministic safety net when the LLM returns an invalid route."""
     agent = next(a for a in PIPELINE_ORDER if a in options)
     return RouteDecision(next_agent=agent, work_order_ids=options[agent],
                          reason="fallback rule: earliest pipeline stage with work waiting")
 
 
 def _route(decision: RouteDecision, attempts: dict, sites: list, steps: int) -> dict:
-    status_of = {s["work_order_id"]: s["status"] for s in sites}
-    for wo in decision.work_order_ids:
-        key = f"{wo}:{status_of.get(wo, 'TASK')}"
+    for item in decision.work_order_ids:
+        key = f"{item}|{_subjects(item, sites)}"
         attempts[key] = attempts.get(key, 0) + 1
     log_event("Main Orchestrator", f"ROUTE -> {decision.next_agent}",
-              {"work_orders": decision.work_order_ids, "reason": decision.reason})
+              {"work": decision.work_order_ids, "reason": decision.reason, "business_date": clock.today()})
     return {"next_agent": decision.next_agent, "steps": steps, "attempts": attempts,
             "task": {"work_order_ids": decision.work_order_ids},
             "events": [{"agent": "Main Orchestrator", "action": f"ROUTE -> {decision.next_agent}",
                         "detail": f"{decision.work_order_ids}: {decision.reason}"}]}
+
+
+def _escalate_stuck(project: str, sites: list, attempts: dict):
+    """A task tried MAX_ATTEMPTS times in a row on the same things without progress goes to the KAM."""
+    # Only consecutive attempts count: once a site has moved on, its older counts are cleared
+    status_of = {s["work_order_id"]: s["status"] for s in sites}
+    for key in list(attempts):
+        item, subj = key.split("|", 1)
+        if item in status_of and status_of[item] != subj:
+            del attempts[key]
+    for key, n in list(attempts.items()):
+        if n < MAX_ATTEMPTS:
+            continue
+        item, subj = key.split("|", 1)
+        attempts[key] = -99   # do not escalate twice
+        if item == T_POLICY and hitl.get_policy(project)["policy"] == "unspecified":
+            hitl.set_policy(project, "end_of_project", 0, "default after no decision")
+            log_event("Main Orchestrator", "RECON_POLICY_DEFAULTED", "end_of_project")
+            continue
+        targets = subj.split(",") if item in (T_PROCUREMENT, T_KITTING, T_COLLECTION) else [item]
+        for wo in targets:
+            if wo.startswith("WO-") and _status(wo) not in TERMINAL | HUMAN_STAGES:
+                hitl.raise_escalation(project, wo, "Main Orchestrator",
+                                      f"No progress after {MAX_ATTEMPTS} attempts at stage {_status(wo)}")
+                log_event("Main Orchestrator", "STUCK_ESCALATED", item, wo)
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +286,14 @@ def planner_node(state: ProjectState) -> dict:
                    "Only set recon_policy if the request explicitly says when to reconcile or bill."),
         ("user", state["kam_request"]),
     ])
+    clock.set_today(clock.shift(req.start_date, -state.get("kickoff_days", 7)))   # project kick off date
     plan = plan_multi_site_rollout(state["project_name"], req.full_sites, req.upgrades, req.partial_sites,
                                    req.start_date)
     if req.recon_policy != "unspecified":
         hitl.set_policy(state["project_name"], req.recon_policy, req.recon_every_n, "KAM request")
     log_event("Main Orchestrator", "PROJECT_PLANNED",
               {"request": req.model_dump(), "sites": plan["total_sites_scheduled"],
-               "dates": [plan["start_date"], plan["end_date"]]})
+               "dates": [plan["start_date"], plan["end_date"]], "business_date": clock.today()})
     return {"plan": {k: plan[k] for k in ("status", "total_sites_scheduled", "start_date", "end_date", "work_orders")},
             "steps": 0, "attempts": {},
             "events": [{"agent": "Main Orchestrator", "action": "PROJECT_PLANNED",
@@ -230,53 +301,66 @@ def planner_node(state: ProjectState) -> dict:
 
 
 def supervisor_node(state: ProjectState) -> dict:
-    """Main Orchestrator, coordination role: decides who works next, on which sites."""
+    """Main Orchestrator, coordination role: decides who works next, on what."""
     project = state["project_name"]
     steps = state.get("steps", 0) + 1
     attempts = dict(state.get("attempts", {}))
-
-    # Sites stuck at the same stage too many times are handed to a human
-    for s in _sites(project):
-        if attempts.get(f"{s['work_order_id']}:{s['status']}", 0) >= MAX_ATTEMPTS and s["status"] not in TERMINAL:
-            set_work_order_status(s["work_order_id"], "NEEDS_ATTENTION")
-            log_event("Main Orchestrator", "STUCK_ESCALATED", s["status"], s["work_order_id"])
-    # Safety net: if Finance could not settle a policy after several tries, use the contract default
-    if attempts.get(f"{POLICY_TASK}:TASK", 0) >= MAX_ATTEMPTS and hitl.get_policy(project)["policy"] == "unspecified":
-        hitl.set_policy(project, "end_of_project", 0, "default after no decision")
-        log_event("Main Orchestrator", "RECON_POLICY_DEFAULTED", "end_of_project")
+    _escalate_stuck(project, _sites(project), attempts)
     sites = _sites(project)
     options, request_ids = _work_options(project, sites)
 
-    if not options or steps > MAX_STEPS:
-        return {"next_agent": "FINISH", "steps": steps}
+    if steps > MAX_STEPS:
+        return {"next_agent": "FINISH", "steps": steps, "attempts": attempts}
+    if not options:
+        nxt = _next_event_date(project, sites)
+        return {"next_agent": "advance_calendar" if nxt else "FINISH", "steps": steps, "attempts": attempts}
 
-    # Requested reconciliations are being scheduled now
     if request_ids and "finance" in options:
         hitl.close_recon_requests(request_ids)
 
-    if len(options) == 1:  # only one agent can act: no decision to make, save an LLM call
+    # 1) Anything only a human can answer is raised first: people are the slowest part of the system
+    if hitl.open_questions(project):
+        return _route(RouteDecision(next_agent="human_review", work_order_ids=[],
+                                    reason="questions are waiting for the KAM"), attempts, sites, steps)
+    if T_POLICY in options.get("finance", []):
+        return _route(RouteDecision(next_agent="finance", work_order_ids=[T_POLICY],
+                                    reason="settle the reconciliation policy first"), attempts, sites, steps)
+
+    # 2) Only one agent can act: no decision to make, save an LLM call
+    if len(options) == 1:
         agent = next(iter(options))
         return _route(RouteDecision(next_agent=agent, work_order_ids=options[agent],
                                     reason="only one agent has work available"), attempts, sites, steps)
 
+    # 3) Real choice: the LLM decides
     try:
         decision = get_structured_llm(RouteDecision).invoke([
             ("system",
              "You are the Main Orchestrator of a telecom rollout. Choose ONE agent to act next and the work "
-             "orders (or task ids) it should handle, taken ONLY from that agent's list. Prefer the earliest "
-             "scheduled sites and batch work for the same agent. Choose human_review when invoices wait for "
-             "sign off, questions wait for the KAM, or the only remaining work is waiting for replies."),
-            ("user", f"Project: {project}\nSites:\n{_site_table(sites)}\n\nAgents with work available: {options}"),
+             "orders (or task ids) it should handle, taken ONLY from that agent's list. Prefer work for the earliest "
+             "install dates, and batch work for the same agent. Choose human_review when invoices wait for sign "
+             "off, escalations wait for the KAM, or the only remaining work is waiting for replies."),
+            ("user", f"Project: {project}\nBusiness date: {clock.today()}\nSites:\n{_site_table(sites)}\n\n"
+                     f"Agents with work available: {options}"),
         ])
         valid = [w for w in decision.work_order_ids if w in options.get(decision.next_agent, [])]
         if decision.next_agent == "FINISH" or decision.next_agent not in options:
             decision = _fallback(options)
         elif decision.next_agent != "human_review":
             decision.work_order_ids = valid or options[decision.next_agent]
-    except Exception as e:  # malformed output, timeout, Ollama hiccup
+    except Exception as e:
         log_event("Main Orchestrator", "ROUTING_ERROR", str(e)[:300])
         decision = _fallback(options)
     return _route(decision, attempts, sites, steps)
+
+
+def advance_calendar_node(state: ProjectState) -> dict:
+    """Nobody can act and nobody is waiting for a human: move the business date to the next event."""
+    nxt = _next_event_date(state["project_name"], _sites(state["project_name"]))
+    old = clock.today()
+    clock.set_today(nxt)
+    log_event("Business Calendar", f"DATE {old} -> {nxt}", None)
+    return {"events": [{"agent": "Business Calendar", "action": "ADVANCE", "detail": f"{old} -> {nxt}"}]}
 
 
 def _run_task(name: str, task_key: str, subject: str, project: str, done_check, answers: list) -> dict:
@@ -284,13 +368,14 @@ def _run_task(name: str, task_key: str, subject: str, project: str, done_check, 
     goal = STAGE_GOALS.get(task_key, "move it to its next stage.")
     answer_text = "".join(f"\nEarlier you asked the KAM: {a['question']}\nThe KAM answered: {a['answer']}\n"
                           f"Act on this answer now." for a in answers)
-    messages = [HumanMessage(f"{subject}\nProject: {project}\nTask: {task_key}{answer_text}\nTo finish you MUST: {goal}")]
+    messages = [HumanMessage(f"{subject}\nProject: {project}\nBusiness date: {clock.today()}\nTask: {task_key}"
+                             f"{answer_text}\nTo finish you MUST: {goal}")]
     agent = get_stage_agent(name, task_key)
     tools_used, reply = [], ""
     for attempt in range(MAX_NUDGES + 1):
         try:
             result = agent.invoke({"messages": messages}, config={"recursion_limit": 40})
-        except Exception as e:  # timeout, malformed tool call, Ollama error: log and move on
+        except Exception as e:
             log_event(DISPLAY_NAMES[name], "AGENT_ERROR", str(e)[:300])
             break
         messages = result["messages"]
@@ -300,56 +385,51 @@ def _run_task(name: str, task_key: str, subject: str, project: str, done_check, 
             break
         if attempt < MAX_NUDGES:
             log_event(DISPLAY_NAMES[name], "NUDGED", f"{task_key} not finished after attempt {attempt + 1}")
-            messages = messages + [HumanMessage(
-                f"The task is not finished. Do not explain, call the next tool now: {goal}")]
+            messages = messages + [HumanMessage(f"The task is not finished. Do not explain, call the next tool now: {goal}")]
     return {"tools": tools_used, "reply": reply[:400]}
 
 
 def make_worker_node(name: str):
     def node(state: ProjectState) -> dict:
         project = state["project_name"]
-        wos = state["task"]["work_order_ids"]
+        items = state["task"]["work_order_ids"]
         events = []
+        me = DISPLAY_NAMES[name]
 
-        def record(task, subject_ids, result, change):
-            log_event(DISPLAY_NAMES[name], "TASK_DONE", {**result, "task": task, "stage": change},
-                      subject_ids if isinstance(subject_ids, str) else None)
-            events.append({"agent": DISPLAY_NAMES[name], "action": "TASK_DONE",
-                           "detail": f"{task}: {change} | tools={result['tools']}"})
+        def record(task, wo, result, change):
+            log_event(me, "TASK_DONE", {**result, "task": task, "result": change}, wo)
+            events.append({"agent": me, "action": "TASK_DONE", "detail": f"{task}: {change} | tools={result['tools']}"})
 
-        # ---- Finance, project level: work out the reconciliation policy ----
-        if name == "finance" and POLICY_TASK in wos:
-            answers = hitl.take_answers(DISPLAY_NAMES[name], project)
-            done = lambda: hitl.get_policy(project)["policy"] != "unspecified" or \
-                hitl.has_open_project_question(project, DISPLAY_NAMES[name])
-            res = _run_task(name, "RECON_POLICY", "Determine the reconciliation policy for this project.",
-                            project, done, answers)
-            record("RECON_POLICY", None, res, hitl.get_policy(project)["policy"])
-            wos = [w for w in wos if w != POLICY_TASK]
-            if not wos:
-                return {"events": events}
+        def stage_count(statuses, dated=False):
+            return [s for s in _sites(project) if s["status"] in statuses and
+                    (not dated or clock.collection_date(s["scheduled_date"]) <= clock.today())]
 
-        # ---- Finance, batch reconciliation + one consolidated invoice ----
-        if name == "finance":
-            done = lambda: all(_status(w) not in ("INSTALLED", "RECONCILED") for w in wos)
-            res = _run_task(name, "RECON_BATCH", f"Reconciliation batch: {wos}", project, done, [])
-            record("RECON_BATCH", None, res, {w: _status(w) for w in wos})
+        project_checks = {
+            T_POLICY: lambda: hitl.get_policy(project)["policy"] != "unspecified" or hitl.has_open_project_question(project, me),
+            T_REJECTIONS: lambda: not hitl.rejected_batches(project) or hitl.has_open_project_question(project, me),
+            T_PROCUREMENT: lambda: not stage_count(("PLANNED",)) or hitl.has_open_project_question(project, me),
+            T_INBOUND: lambda: not due_shipments(clock.today()),
+            T_KITTING: lambda: not stage_count(("STOCK_READY",)),
+            T_COLLECTION: lambda: not stage_count(("KIT_READY",), dated=True),
+        }
+        # ---- project level tasks ----
+        for item in [i for i in items if i in TASK_KEY]:
+            answers = hitl.take_answers(me, project)
+            res = _run_task(name, TASK_KEY[item], f"Project task: {TASK_KEY[item]}", project, project_checks[item], answers)
+            record(TASK_KEY[item], None, res, "done" if project_checks[item]() else "not finished")
+        sites_in_task = [i for i in items if i not in TASK_KEY]
+
+        # ---- Finance: batch reconciliation and one consolidated invoice ----
+        if name == "finance" and sites_in_task:
+            done = lambda: all(_status(w) not in ("INSTALLED", "RECONCILED") for w in sites_in_task)
+            res = _run_task(name, "RECON_BATCH", f"Reconciliation batch: {sites_in_task}", project, done, [])
+            record("RECON_BATCH", None, res, {w: _status(w) for w in sites_in_task})
             return {"events": events}
 
-        # ---- Inventory, project level procurement when several sites are PLANNED ----
-        planned = [w for w in wos if _status(w) == "PLANNED"]
-        if name == "inventory" and len(planned) > 1:
-            done = lambda: any(_status(w) != "PLANNED" for w in planned) or \
-                hitl.has_open_project_question(project, DISPLAY_NAMES[name])
-            answers = hitl.take_answers(DISPLAY_NAMES[name], project)
-            res = _run_task(name, "PROJECT_PROCUREMENT", f"Planned sites: {planned}", project, done, answers)
-            record("PROJECT_PROCUREMENT", None, res, {w: _status(w) for w in planned})
-            return {"events": events}   # any site still PLANNED is routed again (then handled per site)
-
         # ---- Site level tasks, one work order per prompt ----
-        for wo in wos:
+        for wo in sites_in_task:
             start = _status(wo)
-            answers = hitl.take_answers(DISPLAY_NAMES[name], project, wo)
+            answers = hitl.take_answers(me, project, wo)
             res = _run_task(name, start, f"Work order: {wo}\nCurrent stage: {start}", project,
                             lambda: _status(wo) != start, answers)
             record(start, wo, res, f"{start} -> {_status(wo)}")
@@ -361,35 +441,39 @@ def human_review_node(state: ProjectState) -> dict:
     """Pauses the whole graph until a human answers. State is checkpointed meanwhile."""
     project = state["project_name"]
     sites = _sites(project)
-    batches = hitl.pending_batches(project)
-    questions = hitl.open_questions(project)
-    escalations = [{"work_order_id": s["work_order_id"], "status": s["status"]}
-                   for s in sites if s["status"] == "NEEDS_ATTENTION"]
-    waiting = awaiting_replies(project)
     policy = hitl.get_policy(project)
     installed = [s["work_order_id"] for s in sites if s["status"] in ("INSTALLED", "RECONCILED")]
-    recon_prompt = installed if policy["policy"] == "on_request" else []
-
+    payload = {"type": "human_review", "business_date": clock.today(),
+               "questions": hitl.open_questions(project), "batches": hitl.pending_batches(project),
+               "escalations": hitl.open_escalations(project), "awaiting_replies": awaiting_replies(project),
+               "installed_awaiting_reconciliation": installed if policy["policy"] == "on_request" else []}
     log_event("Main Orchestrator", "AWAITING_HUMAN",
-              {"batches": [b["batch_id"] for b in batches], "questions": [q["question_id"] for q in questions],
-               "escalations": escalations, "emails_awaiting_reply": [m["message_id"] for m in waiting]})
+              {k: (len(v) if isinstance(v, list) else v) for k, v in payload.items()})
 
     # ---- graph pauses here; resumes with Command(resume=decisions) ----
-    # Email replies, answers and reconciliation requests can also arrive directly in the database (UI / CLI).
-    decisions = interrupt({"type": "human_review", "batches": batches, "questions": questions,
-                           "escalations": escalations, "awaiting_replies": waiting,
-                           "installed_awaiting_reconciliation": recon_prompt})
+    decisions = interrupt(payload)
 
     approver = decisions.get("approver", "KAM")
-    for batch_id, verdict in decisions.get("batches", {}).items():
-        res = hitl.decide_batch(batch_id, approver, verdict == "approve")
-        log_event("Human (KAM)", f"BATCH_{res['status']}", res)
     for qid, text in decisions.get("answers", {}).items():
         res = hitl.answer(int(qid), text)
         log_event("Human (KAM)", "ANSWERED", {"question_id": qid, "answer": text}, res.get("work_order_id"))
-    for wo, note in decisions.get("escalations", {}).items():
-        set_work_order_status(wo, "ESCALATED")
-        log_event("Human (KAM)", "ESCALATION_NOTED", note, wo)
+    for batch_id, verdict in decisions.get("batches", {}).items():
+        v = verdict if isinstance(verdict, dict) else {"verdict": verdict}
+        res = hitl.decide_batch(batch_id, approver, v["verdict"] == "approve", v.get("reason", ""))
+        log_event("Human (KAM)", f"BATCH_{res['status']}", {**res, "reason": v.get("reason", "")})
+    for wo, decision in decisions.get("escalations", {}).items():
+        d = decision.lower()
+        if "write" in d:
+            done = hitl.write_off(wo)
+            log_event("Human (KAM)", "WRITE_OFF_APPROVED", done, wo)
+        elif "chase" in d or "investigate" in d:
+            set_work_order_status(wo, "RECON_DISCREPANCY")
+            hitl.note_for_agent(project, DISPLAY_NAMES["field"], wo, decision)
+            log_event("Human (KAM)", "CHASE_AGAIN", decision, wo)
+        else:
+            set_work_order_status(wo, "ESCALATED")
+            log_event("Human (KAM)", "SITE_CLOSED_UNBILLED", decision, wo)
+        hitl.resolve_escalation(wo, decision)
     if decisions.get("request_reconciliation"):
         hitl.request_reconciliation(project, approver)
         log_event("Human (KAM)", "RECONCILIATION_REQUESTED", None)
@@ -406,7 +490,8 @@ def finish_node(state: ProjectState) -> dict:
     try:
         summary = get_llm().invoke([
             ("system", "Write a 5 line executive summary for the Key Accounts Manager. Use only the facts given."),
-            ("user", f"Final site status:\n{table}\nApproved site invoices: {approved[1]}, total £{approved[0]:,.2f}"),
+            ("user", f"Business date: {clock.today()}\nFinal site status:\n{table}\n"
+                     f"Approved site invoices: {approved[1]}, total £{approved[0]:,.2f}"),
         ]).content
     except Exception:
         summary = table
@@ -430,13 +515,15 @@ def build_graph(checkpointer=None):
         g.add_node(name, make_worker_node(name))
         g.add_edge(name, "supervisor")
     g.add_node("human_review", human_review_node)
+    g.add_node("advance_calendar", advance_calendar_node)
     g.add_node("finish", finish_node)
 
     g.add_edge(START, "planner")
     g.add_edge("planner", "supervisor")
     g.add_conditional_edges("supervisor", route_from_supervisor,
-                            ["inventory", "logistics", "field", "finance", "human_review", "finish"])
+                            ["inventory", "logistics", "field", "finance", "human_review", "advance_calendar", "finish"])
     g.add_edge("human_review", "supervisor")
+    g.add_edge("advance_calendar", "supervisor")
     g.add_edge("finish", END)
 
     if checkpointer is None:
@@ -445,12 +532,13 @@ def build_graph(checkpointer=None):
 
 
 def _config(thread_id: str) -> dict:
-    return {"configurable": {"thread_id": thread_id}, "recursion_limit": 300}
+    return {"configurable": {"thread_id": thread_id}, "recursion_limit": 600}
 
 
-def start_project(graph, kam_request: str, project_name: str, thread_id: str) -> dict:
+def start_project(graph, kam_request: str, project_name: str, thread_id: str, kickoff_days: int = 7) -> dict:
     """Runs until the first human interrupt (or the end). Returns the graph result."""
-    return graph.invoke({"kam_request": kam_request, "project_name": project_name}, _config(thread_id))
+    return graph.invoke({"kam_request": kam_request, "project_name": project_name, "kickoff_days": kickoff_days},
+                        _config(thread_id))
 
 
 def resume_project(graph, thread_id: str, decisions: dict) -> dict:

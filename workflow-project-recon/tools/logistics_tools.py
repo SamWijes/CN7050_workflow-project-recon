@@ -7,7 +7,7 @@ SUPPLIERS_DB = "databases/suppliers.db"
 LOGISTICS_DB = "databases/logistics_transport.db"
 
 
-def schedule_inbound_shipment(po_id: str, pallets_required: int, inbound_date: str, serialized: bool = True) -> dict:
+def schedule_inbound_shipment(po_id: str, pallets_required: float, inbound_date: str, serialized: bool = True) -> dict:
     """Clears customs, reserves a WH bay, generates the supplier packing list and logs the shipment."""
     sup_conn = sqlite3.connect(SUPPLIERS_DB)
     po = sup_conn.execute("SELECT supplier_name, sku, qty_ordered FROM purchase_orders WHERE po_id = ?",
@@ -46,45 +46,91 @@ def schedule_inbound_shipment(po_id: str, pallets_required: int, inbound_date: s
             "assigned_bay": bay["bay_id"], "packing_list": packing_list}
 
 
-def create_outbound_waybill(work_order_id: str, site_id: str, dispatched_items: list, scheduled_date: str,
-                            carrier: str = "IntelliFleet Logistics") -> dict:
-    waybill_id = f"WB-{site_id}-{uuid.uuid4().hex[:4].upper()}"
+# ---------------------------------------------------------------------------
+# Warehouse based model: inbound batches arrive at the WH on their ETA date, subcontractors
+# (main kits) and engineers (replacements) COLLECT from the WH and sign a collection note.
+# ---------------------------------------------------------------------------
+
+def _lconn():
     conn = sqlite3.connect(LOGISTICS_DB)
-    conn.execute("""
-        INSERT INTO outbound_deliveries
-        (waybill_id, work_order_id, site_id, carrier_name, scheduled_delivery_date, delivery_status, dispatched_items_json)
-        VALUES (?, ?, ?, ?, ?, 'IN_TRANSIT', ?)
-    """, (waybill_id, work_order_id, site_id, carrier, scheduled_date, json.dumps(dispatched_items)))
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS shipment_batches (
+            shipment_id TEXT PRIMARY KEY,
+            batch_ref TEXT NOT NULL,          -- e.g. IMP-01 (import) or LP-01 (local purchase)
+            project_name TEXT
+        );
+        CREATE TABLE IF NOT EXISTS collection_notes (
+            note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            work_order_id TEXT NOT NULL,
+            sku TEXT NOT NULL,
+            serial_number TEXT,
+            qty INTEGER NOT NULL,
+            collected_by TEXT NOT NULL,
+            collected_at TEXT NOT NULL
+        );
+    """)
+    return conn
+
+
+def tag_shipment(shipment_id: str, batch_ref: str, project_name: str = None) -> None:
+    conn = _lconn()
+    conn.execute("INSERT OR REPLACE INTO shipment_batches VALUES (?, ?, ?)", (shipment_id, batch_ref, project_name))
     conn.commit()
     conn.close()
-    return {"status": "WAYBILL_CREATED", "waybill_id": waybill_id, "site_id": site_id,
-            "carrier": carrier, "scheduled_delivery_date": scheduled_date}
 
 
-def confirm_site_delivery(waybill_id: str, received_by: str, delivered_at: str) -> dict:
-    """Proof of delivery: engineer signs for the consignment on site."""
-    conn = sqlite3.connect(LOGISTICS_DB)
-    cur = conn.execute("""
-        UPDATE outbound_deliveries SET delivery_status = 'DELIVERED', received_by_engineer = ?, delivered_at = ?
-        WHERE waybill_id = ?
-    """, (received_by, delivered_at, waybill_id))
-    conn.commit()
-    conn.close()
-    if cur.rowcount == 0:
-        return {"status": "FAILED", "reason": f"Waybill {waybill_id} not found."}
-    return {"status": "DELIVERED", "waybill_id": waybill_id, "received_by": received_by, "delivered_at": delivered_at}
-
-
-def get_delivered_quantities(work_order_id: str) -> dict:
-    """Sum of delivered quantities per SKU from signed waybills (the carrier leg of 3 way reconciliation)."""
-    conn = sqlite3.connect(LOGISTICS_DB)
-    rows = conn.execute("""
-        SELECT dispatched_items_json FROM outbound_deliveries
-        WHERE work_order_id = ? AND delivery_status = 'DELIVERED'
-    """, (work_order_id,)).fetchall()
+def in_transit_quantities() -> dict:
+    """Stock ordered and on its way to the warehouse (not yet received)."""
+    conn = _lconn()
+    rows = conn.execute("SELECT packing_list_json FROM inbound_shipments WHERE status = 'IN_TRANSIT'").fetchall()
     conn.close()
     totals = {}
-    for (items_json,) in rows:
-        for item in json.loads(items_json):
+    for (pl,) in rows:
+        for item in json.loads(pl):
             totals[item["sku"]] = totals.get(item["sku"], 0) + item["qty"]
     return totals
+
+
+def due_shipments(as_of: str) -> list:
+    """Inbound shipments whose ETA is on or before as_of and that are not received yet."""
+    conn = _lconn()
+    rows = conn.execute("""SELECT s.shipment_id, s.po_id, s.supplier_name, s.inbound_date, s.packing_list_json,
+                                  COALESCE(b.batch_ref, '')
+                           FROM inbound_shipments s LEFT JOIN shipment_batches b ON b.shipment_id = s.shipment_id
+                           WHERE s.status = 'IN_TRANSIT' AND s.inbound_date <= ? ORDER BY s.inbound_date""",
+                        (as_of,)).fetchall()
+    conn.close()
+    return [{"shipment_id": r[0], "po_id": r[1], "supplier": r[2], "eta": r[3],
+             "packing_list": json.loads(r[4]), "batch_ref": r[5]} for r in rows]
+
+
+def next_shipment_date(after: str):
+    conn = _lconn()
+    row = conn.execute("SELECT MIN(inbound_date) FROM inbound_shipments WHERE status = 'IN_TRANSIT' AND inbound_date > ?",
+                       (after,)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def record_collection(work_order_id: str, items: list, collected_by: str, collected_at: str) -> int:
+    """Collection note signed by the subcontractor or engineer at the warehouse counter."""
+    conn = _lconn()
+    conn.executemany("""INSERT INTO collection_notes (work_order_id, sku, serial_number, qty, collected_by, collected_at)
+                        VALUES (?, ?, ?, ?, ?, ?)""",
+                     [(work_order_id, i["sku"], i.get("serial_number"), i["qty"], collected_by, collected_at) for i in items])
+    conn.commit()
+    conn.close()
+    return len(items)
+
+
+def get_collected_quantities(work_order_id: str) -> dict:
+    """Quantities signed for on collection notes (the 'handover' leg of 3 way reconciliation)."""
+    conn = _lconn()
+    rows = conn.execute("SELECT sku, SUM(qty) FROM collection_notes WHERE work_order_id = ? GROUP BY sku",
+                        (work_order_id,)).fetchall()
+    conn.close()
+    return {sku: q for sku, q in rows}
+
+
+# Reconciliation reads the handover quantities through this name
+get_delivered_quantities = get_collected_quantities

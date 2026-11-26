@@ -60,9 +60,26 @@ def _conn():
             file_path TEXT,
             created_at TEXT NOT NULL,
             decided_by TEXT,
-            decided_at TEXT
+            decided_at TEXT,
+            decision_note TEXT,               -- the KAM's reason when rejecting
+            agent_note TEXT,                  -- Finance agent's explanation on a resubmission
+            parent_batch TEXT                 -- the rejected batch this one revises
+        );
+        CREATE TABLE IF NOT EXISTS escalations (
+            escalation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_name TEXT NOT NULL,
+            work_order_id TEXT NOT NULL,
+            raised_by TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            facts_json TEXT,
+            status TEXT NOT NULL DEFAULT 'OPEN',      -- OPEN, RESOLVED
+            decision TEXT,
+            raised_at TEXT NOT NULL
         );
     """)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(reconciliation_ledger)")}
+    if cols and "qty_written_off" not in cols:   # older databases
+        conn.execute("ALTER TABLE reconciliation_ledger ADD COLUMN qty_written_off INTEGER DEFAULT 0")
     return conn
 
 
@@ -102,6 +119,8 @@ def set_policy(project_name: str, policy: str, every_n: int = 0, source: str = "
 # ---------------------------------------------------------------------------
 
 def ask(project_name: str, agent: str, question: str, options: list = None, work_order_id: str = None) -> dict:
+    if not options or len(options) < 2:
+        return {"status": "REJECTED", "reason": "Give the KAM 2 to 4 clear options to choose from."}
     conn = _conn()
     # One open question at a time per site (or per agent for project level questions)
     if work_order_id:
@@ -228,15 +247,17 @@ def save_batch(batch_id, project_name, work_orders, invoice_ids, total, has_anom
 
 def pending_batches(project_name: str) -> list:
     conn = _conn()
-    rows = conn.execute("""SELECT batch_id, work_orders_json, invoice_ids_json, grand_total_gbp, has_anomalies, file_path
+    rows = conn.execute("""SELECT batch_id, work_orders_json, invoice_ids_json, grand_total_gbp, has_anomalies, file_path,
+                                  agent_note, parent_batch
                            FROM billing_batches WHERE project_name = ? AND status = 'PENDING_APPROVAL'""",
                         (project_name,)).fetchall()
     conn.close()
     return [{"batch_id": r[0], "work_orders": json.loads(r[1]), "invoice_ids": json.loads(r[2]),
-             "total_gbp": r[3], "has_anomalies": bool(r[4]), "file": r[5]} for r in rows]
+             "total_gbp": r[3], "has_anomalies": bool(r[4]), "file": r[5], "agent_note": r[6],
+             "revises": r[7]} for r in rows]
 
 
-def decide_batch(batch_id: str, approver: str, approved: bool) -> dict:
+def decide_batch(batch_id: str, approver: str, approved: bool, reason: str = "") -> dict:
     from tools.finance_tools import record_invoice_decision
     conn = _conn()
     row = conn.execute("SELECT invoice_ids_json FROM billing_batches WHERE batch_id = ? AND status = 'PENDING_APPROVAL'",
@@ -245,10 +266,162 @@ def decide_batch(batch_id: str, approver: str, approved: bool) -> dict:
         conn.close()
         return {"status": "FAILED", "reason": f"Batch {batch_id} is not pending."}
     status = "APPROVED" if approved else "REJECTED"
-    conn.execute("UPDATE billing_batches SET status = ?, decided_by = ?, decided_at = ? WHERE batch_id = ?",
-                 (status, approver, _now(), batch_id))
+    conn.execute("UPDATE billing_batches SET status = ?, decided_by = ?, decided_at = ?, decision_note = ? "
+                 "WHERE batch_id = ?", (status, approver, _now(), reason, batch_id))
     conn.commit()
     conn.close()
     for inv in json.loads(row[0]):
         record_invoice_decision(inv, approver, approved)
     return {"status": status, "batch_id": batch_id}
+
+
+def last_answer(project_name: str, agent: str, work_order_id: str = None):
+    """The most recent answer the KAM gave this agent (used to check how the agent interpreted it)."""
+    conn = _conn()
+    if work_order_id:
+        row = conn.execute("""SELECT answer FROM human_questions WHERE work_order_id = ? AND agent = ?
+                              AND status IN ('ANSWERED', 'CONSUMED') ORDER BY question_id DESC LIMIT 1""",
+                           (work_order_id, agent)).fetchone()
+    else:
+        row = conn.execute("""SELECT answer FROM human_questions WHERE project_name = ? AND work_order_id IS NULL
+                              AND agent = ? AND status IN ('ANSWERED', 'CONSUMED') ORDER BY question_id DESC LIMIT 1""",
+                           (project_name, agent)).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def parse_policy_text(text: str):
+    """Plain rule reading of a policy answer. Returns (policy, every_n) or None if it cannot tell."""
+    import re
+    t = (text or "").lower()
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "ten": 10}
+    m = re.search(r"every\s+(\d+|one|two|three|four|five|ten)\s*(site|sites)?", t)
+    if m:
+        n = m.group(1)
+        return ("every_n_sites", int(n) if n.isdigit() else words[n])
+    if re.search(r"\b(every|each|per)\s+(single\s+)?site\b|for every site|site by site", t):
+        return ("every_n_sites", 1)
+    if re.search(r"\bend\b|complet|all sites (are )?(done|installed|finished)|close ?out", t):
+        return ("end_of_project", 0)
+    if re.search(r"request|when i ask|on demand|manual", t):
+        return ("on_request", 0)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Escalations (with the reason and facts, so the KAM can decide)
+# ---------------------------------------------------------------------------
+
+def raise_escalation(project_name: str, work_order_id: str, raised_by: str, reason: str, facts=None) -> dict:
+    conn = _conn()
+    open_row = conn.execute("SELECT escalation_id FROM escalations WHERE work_order_id = ? AND status = 'OPEN'",
+                            (work_order_id,)).fetchone()
+    if open_row:
+        conn.close()
+        return {"status": "ALREADY_OPEN", "escalation_id": open_row[0]}
+    cur = conn.execute("""INSERT INTO escalations (project_name, work_order_id, raised_by, reason, facts_json, raised_at)
+                          VALUES (?, ?, ?, ?, ?, ?)""",
+                       (project_name, work_order_id, raised_by, reason, json.dumps(facts or []), _now()))
+    conn.execute("UPDATE work_orders SET status = 'NEEDS_ATTENTION' WHERE work_order_id = ?", (work_order_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ESCALATED", "escalation_id": cur.lastrowid}
+
+
+def open_escalations(project_name: str) -> list:
+    conn = _conn()
+    rows = conn.execute("""SELECT escalation_id, work_order_id, raised_by, reason, facts_json FROM escalations
+                           WHERE project_name = ? AND status = 'OPEN'""", (project_name,)).fetchall()
+    conn.close()
+    return [{"escalation_id": r[0], "work_order_id": r[1], "raised_by": r[2], "reason": r[3],
+             "facts": json.loads(r[4] or "[]")} for r in rows]
+
+
+def resolve_escalation(work_order_id: str, decision: str) -> None:
+    conn = _conn()
+    conn.execute("UPDATE escalations SET status = 'RESOLVED', decision = ? WHERE work_order_id = ? AND status = 'OPEN'",
+                 (decision, work_order_id))
+    conn.commit()
+    conn.close()
+
+
+def write_off(work_order_id: str) -> list:
+    """KAM approved write off: every unaccounted quantity on the site is written off, so it can reconcile."""
+    conn = _conn()
+    rows = conn.execute("""SELECT id, sku, qty_dispatched - qty_installed - qty_quarantined - qty_returned - qty_written_off
+                           FROM reconciliation_ledger WHERE work_order_id = ?""", (work_order_id,)).fetchall()
+    done = []
+    for row_id, sku, open_qty in rows:
+        if open_qty > 0:
+            conn.execute("UPDATE reconciliation_ledger SET qty_written_off = qty_written_off + ? WHERE id = ?",
+                         (open_qty, row_id))
+            done.append({"sku": sku, "qty": open_qty})
+    conn.execute("UPDATE work_orders SET status = 'INSTALLED' WHERE work_order_id = ?", (work_order_id,))
+    conn.commit()
+    conn.close()
+    return done
+
+
+# ---------------------------------------------------------------------------
+# Rejected invoices: the KAM gives a reason, the Finance agent reviews and resubmits or cancels
+# ---------------------------------------------------------------------------
+
+def rejected_batches(project_name: str) -> list:
+    conn = _conn()
+    rows = conn.execute("""SELECT batch_id, work_orders_json, invoice_ids_json, grand_total_gbp, decision_note, file_path
+                           FROM billing_batches WHERE project_name = ? AND status = 'REJECTED'""",
+                        (project_name,)).fetchall()
+    conn.close()
+    return [{"batch_id": r[0], "work_orders": json.loads(r[1]), "invoice_ids": json.loads(r[2]),
+             "total_gbp": r[3], "kam_reason": r[4], "file": r[5]} for r in rows]
+
+
+def resubmit_batch(batch_id: str, explanation: str) -> dict:
+    conn = _conn()
+    row = conn.execute("""SELECT project_name, work_orders_json, invoice_ids_json, grand_total_gbp, has_anomalies, file_path
+                          FROM billing_batches WHERE batch_id = ? AND status = 'REJECTED'""", (batch_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "FAILED", "reason": f"{batch_id} is not a rejected batch."}
+    project, wos, invs, total, anomalies, path = row
+    n = conn.execute("SELECT COUNT(*) FROM billing_batches WHERE parent_batch = ?", (batch_id,)).fetchone()[0] + 1
+    new_id = f"{batch_id}-R{n}"
+    conn.execute("""INSERT INTO billing_batches (batch_id, project_name, work_orders_json, invoice_ids_json, grand_total_gbp,
+                        has_anomalies, file_path, created_at, agent_note, parent_batch)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 (new_id, project, wos, invs, total, anomalies, path, _now(), explanation, batch_id))
+    conn.execute("UPDATE billing_batches SET status = 'REVISED' WHERE batch_id = ?", (batch_id,))
+    for inv in json.loads(invs):
+        conn.execute("UPDATE invoices SET status = 'PENDING_APPROVAL', approved_by = NULL, approved_at = NULL "
+                     "WHERE invoice_id = ?", (inv,))
+    for wo in json.loads(wos):
+        conn.execute("UPDATE work_orders SET status = 'AWAITING_SIGNOFF' WHERE work_order_id = ?", (wo,))
+    conn.commit()
+    conn.close()
+    return {"status": "RESUBMITTED", "batch_id": new_id, "revises": batch_id}
+
+
+def cancel_batch(batch_id: str, reason: str) -> dict:
+    conn = _conn()
+    row = conn.execute("SELECT work_orders_json FROM billing_batches WHERE batch_id = ? AND status = 'REJECTED'",
+                       (batch_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"status": "FAILED", "reason": f"{batch_id} is not a rejected batch."}
+    conn.execute("UPDATE billing_batches SET status = 'CANCELLED', agent_note = ? WHERE batch_id = ?", (reason, batch_id))
+    for wo in json.loads(row[0]):
+        conn.execute("UPDATE work_orders SET status = 'INVOICE_CANCELLED' WHERE work_order_id = ?", (wo,))
+    conn.commit()
+    conn.close()
+    return {"status": "CANCELLED", "batch_id": batch_id}
+
+
+def note_for_agent(project_name: str, agent: str, work_order_id: str, text: str) -> None:
+    """A KAM instruction the agent will see the next time it works on this site (no pause needed)."""
+    conn = _conn()
+    conn.execute("""INSERT INTO human_questions (project_name, work_order_id, agent, question, options_json, status,
+                                                 answer, asked_at, answered_at)
+                    VALUES (?, ?, ?, 'KAM instruction on the escalation', '[]', 'ANSWERED', ?, ?, ?)""",
+                 (project_name, work_order_id, agent, text, _now(), _now()))
+    conn.commit()
+    conn.close()
