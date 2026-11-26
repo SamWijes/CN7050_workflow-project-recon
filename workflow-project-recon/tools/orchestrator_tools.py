@@ -3,6 +3,7 @@ import json
 import random
 import sqlite3
 from datetime import datetime, timedelta
+from tools.mailbox_tools import send_mail
 
 ORCHESTRATOR_DB = "databases/orchestrator_ledger.db"
 WMS_DB = "databases/wms_inventory.db"
@@ -123,6 +124,9 @@ def send_notification_email(work_order_id: str, recipient_email: str, recipient_
     email_id = cur.lastrowid
     conn.commit()
     conn.close()
+    
+    
+    send_mail(work_order_id, "orchestrator@intellicommstech.local", recipient_email, subject, body)
 
     filename = os.path.join(OUTBOX_DIR, f"email_{email_id}_{work_order_id}_{recipient_role}.txt")
     with open(filename, "w", encoding="utf-8") as f:

@@ -24,6 +24,7 @@ from agents.workers import build_workers, DISPLAY_NAMES
 from tools.orchestrator_tools import ORCHESTRATOR_DB, plan_multi_site_rollout, set_work_order_status
 from tools.project_tools import get_project_work_orders
 from tools.finance_tools import record_invoice_decision
+from tools.mailbox_tools import awaiting_replies
 
 CHECKPOINT_DB = "databases/graph_checkpoints.db"
 MAX_STEPS = 60          # hard stop for the supervisor loop
@@ -37,8 +38,10 @@ STAGE_OWNER = {
     "REPLACEMENT_PENDING": "field",
     "INSTALLED": "finance",
     "RECONCILED": "finance",
+    "RECON_DISCREPANCY": "field",      # Field agent investigates and emails whoever holds the items
+    "REPLY_RECEIVED": "field",         # Field agent reads the reply and resolves
     "AWAITING_SIGNOFF": "human_review",
-    "RECON_DISCREPANCY": "human_review",
+    "AWAITING_REPLY": "human_review",  # graph pauses until the person answers
     "NEEDS_ATTENTION": "human_review",
 }
 TERMINAL = {"CLOSED", "INVOICE_REJECTED", "ESCALATED"}
@@ -149,9 +152,10 @@ def supervisor_node(state: ProjectState) -> dict:
              "You are the Main Orchestrator of a telecom rollout. Each site moves through stages: "
              "PLANNED -> STOCK_READY -> DELIVERED -> INSTALLED -> RECONCILED -> AWAITING_SIGNOFF -> CLOSED. "
              "Choose ONE agent to act next and the work orders it should handle. Only choose work orders "
-             "whose next owner is that agent. Prefer moving sites with the earliest scheduled date, and "
-             "batch several sites for the same agent when you can. Choose human_review when invoices are "
-             "waiting for sign off or a site needs a human decision."),
+             "batch several sites for the same agent when you can. Sites that fail reconciliation go to the "
+             "field agent, who investigates and emails the person holding the items. Choose human_review "
+             "when invoices wait for sign off, a site needs a human decision, or the only remaining work is "
+             "waiting for email replies."),
             ("user", f"Project: {state['project_name']}\nSites:\n{_site_table(sites)}\n\n"
                      f"Agents with work available: {options}"),
         ])
@@ -199,14 +203,17 @@ def human_review_node(state: ProjectState) -> dict:
                                          FROM invoices WHERE status IN ('PENDING_APPROVAL', 'HELD_ANOMALY')""")]
     conn.close()
     escalations = [{"work_order_id": s["work_order_id"], "status": s["status"]}
-                   for s in sites if s["status"] in ("RECON_DISCREPANCY", "NEEDS_ATTENTION")]
+                   for s in sites if s["status"] == "NEEDS_ATTENTION"]
+    waiting = awaiting_replies(state["project_name"])
 
     log_event("Main Orchestrator", "AWAITING_HUMAN",
-              {"invoices": [i["invoice_id"] for i in invoices], "escalations": escalations})
+              {"invoices": [i["invoice_id"] for i in invoices], "escalations": escalations,
+               "emails_awaiting_reply": [m["message_id"] for m in waiting]})
 
     # ---- graph pauses here; resumes with Command(resume=decisions) ----
-    decisions = interrupt({"type": "human_review", "invoices": invoices, "escalations": escalations})
-
+    # Replies to emails are delivered into the mailbox (simulated or typed in the UI) before resuming.
+    decisions = interrupt({"type": "human_review", "invoices": invoices, "escalations": escalations,
+                           "awaiting_replies": waiting})
     applied = []
     for inv_id, verdict in decisions.get("invoices", {}).items():
         res = record_invoice_decision(inv_id, decisions.get("approver", "KAM"), verdict == "approve")

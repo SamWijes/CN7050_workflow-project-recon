@@ -82,8 +82,10 @@ def process_field_report(report: dict, txn_date: str = None) -> dict:
         triage_results.append({"serial_number": fault["serial_number"], "sku": fault["sku"],
                                "decision": decision, "retrieved_context": rag["retrieved_context"]})
 
-        quarantine_faulty_unit(fault["sku"], fault["serial_number"], report["engineer_id"], wo, txn_date)
-        record_ledger_quantity(wo, [fault], "qty_quarantined")
+        # The engineer normally hands the faulty unit back; if not, it stays unaccounted until chased
+        if fault.get("unit_returned", True):
+            quarantine_faulty_unit(fault["sku"], fault["serial_number"], report["engineer_id"], wo, txn_date)
+            record_ledger_quantity(wo, [fault], "qty_quarantined")
 
         if decision.get("trigger_escalation_or_replenishment"):
             replenishment_requests.append({"sku": fault["sku"], "qty": 1, "serialized": True,

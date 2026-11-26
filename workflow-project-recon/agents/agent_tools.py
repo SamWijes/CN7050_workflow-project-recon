@@ -13,7 +13,10 @@ from tools.orchestrator_tools import (ORCHESTRATOR_DB, WMS_DB, get_work_order, g
                                       set_work_order_status, record_ledger_quantity)
 from tools.inventory_tools import check_bom_stock, query_suppliers
 from tools.logistics_tools import get_delivered_quantities
-from tools.field_tools import simulate_field_app_report, process_field_report
+from tools.field_tools import process_field_report, quarantine_faulty_unit
+from tools.inventory_tools import record_return, get_outbound_history, get_sku_description
+from tools.mailbox_tools import send_mail, take_new_replies
+from simulation.field_app import simulate_site_report
 from tools.finance_tools import run_three_way_reconciliation, generate_client_invoice
 from tools.project_tools import get_project_work_orders, source_shortage, dispatch_and_deliver
 
@@ -236,7 +239,8 @@ def run_site_installation(work_order_id: str) -> dict:
         (work_order_id,))]
     conn.close()
 
-    report = simulate_field_app_report(work_order_id, wo["site_id"], wo["engineer_id"], items, mode=SIM["field_mode"])
+    scenario = SIM["site_scenarios"].get(wo["site_id"], "happy_path")
+    report = simulate_site_report(wo, items, SIM["field_mode"], scenario)
     triage = process_field_report(report, txn_date=wo["scheduled_date"])
     faults = [{"sku": t["sku"], "failed_serial": t["serial_number"],
                "policy_code": t["decision"].get("policy_code"),
@@ -295,6 +299,134 @@ def _do_replacement(wo: dict, sku: str, failed_serial: str) -> dict:
     return {"status": "INSTALLED", "failed_serial": failed_serial, "replacement_serial": new_serial,
             "site_status": get_work_order(work_order_id)["status"]}
 
+# ---------------------------------------------------------------------------
+# Field Execution Agent: reconciliation investigations (email the person who holds the items)
+# ---------------------------------------------------------------------------
+
+def _unaccounted(work_order_id: str) -> list:
+    conn = sqlite3.connect(ORCHESTRATOR_DB)
+    rows = conn.execute("""
+        SELECT sku, serialized, qty_dispatched - qty_installed - qty_quarantined - qty_returned
+        FROM reconciliation_ledger WHERE work_order_id = ?
+    """, (work_order_id,)).fetchall()
+    conn.close()
+    return [{"sku": s, "serialized": bool(ser), "unaccounted": u} for s, ser, u in rows if u != 0]
+
+
+def _resource(resource_id: str):
+    conn = sqlite3.connect(ORCHESTRATOR_DB)
+    row = conn.execute("SELECT resource_id, role, email FROM resources WHERE resource_id = ?", (resource_id,)).fetchone()
+    conn.close()
+    return dict(zip(["resource_id", "role", "email"], row)) if row else None
+
+
+def _query_facts(work_order_id: str) -> list:
+    """Per unaccounted SKU: part number, description, qty, serials, outbound date, who collected it."""
+    facts = []
+    for u in _unaccounted(work_order_id):
+        history = get_outbound_history(work_order_id, u["sku"])
+        if u["serialized"]:
+            conn = sqlite3.connect(WMS_DB)
+            q = {r[0] for r in conn.execute("SELECT serial_number FROM wms_ledger WHERE transaction_type = 'QUARANTINE' "
+                                            "AND reference = ?", (work_order_id,))}
+            conn.close()
+            # Serials issued to someone other than the original subcon are the replacement chain
+            candidates = [h for h in history if h["serial_number"] not in q]
+            collector = history[-1]["collected_by"] if history else None
+        else:
+            candidates = history
+            collector = history[0]["collected_by"] if history else None
+        facts.append({"sku": u["sku"], "description": get_sku_description(u["sku"]),
+                      "unaccounted_qty": u["unaccounted"], "serialized": u["serialized"],
+                      "issued": [{"serial": h["serial_number"], "qty": h["qty"], "outbound_date": h["outbound_date"],
+                                  "collected_by": h["collected_by"]} for h in candidates],
+                      "contact": collector})
+    return facts
+
+
+@tool
+def investigate_discrepancy(work_order_id: str) -> dict:
+    """For a site that failed reconciliation: which items are unaccounted for, their part numbers,
+    serials, outbound dates and who collected them (the person to contact)."""
+    wo, err = _wo_or_error(work_order_id)
+    if err:
+        return err
+    facts = _query_facts(work_order_id)
+    log_event("Field Agent", "INVESTIGATING", facts, work_order_id)
+    return {"work_order_id": work_order_id, "site_id": wo["site_id"], "unaccounted_items": facts}
+
+
+@tool
+def send_email(work_order_id: str, recipient_id: str, subject: str, body: str) -> dict:
+    """Email an engineer or subcontractor (recipient_id such as 'Subcon-B' or 'Engineer-C') and wait
+    for their reply. The site pauses until they answer. Write the body yourself: be specific and polite."""
+    person = _resource(recipient_id)
+    if not person:
+        return {"error": f"Unknown recipient {recipient_id}"}
+    if not _claim(work_order_id, "RECON_DISCREPANCY", "AWAITING_REPLY") and \
+       not _claim(work_order_id, "REPLY_RECEIVED", "AWAITING_REPLY"):
+        return {"error": "Site is not under investigation, or an email is already awaiting a reply."}
+
+    # Always attach the hard facts so the email is correct even if the model paraphrases
+    ref = "\n".join(f"  - {f['sku']} {f['description']}: {f['unaccounted_qty']} unaccounted; issued "
+                    + "; ".join(f"{i['serial'] or str(i['qty']) + ' units'} on {i['outbound_date']} to {i['collected_by']}"
+                                for i in f["issued"])
+                    for f in _query_facts(work_order_id))
+    full_body = f"{body}\n\n--- Reconciliation reference ({work_order_id}) ---\n{ref}"
+    msg = send_mail(work_order_id, "field.agent@intellicommstech.local", person["email"], subject, full_body,
+                    expects_reply=True)
+    log_event("Field Agent", f"EMAIL -> {recipient_id}", {"subject": subject}, work_order_id)
+    return {"status": "AWAITING_REPLY", "message_id": msg["message_id"], "to": person["email"]}
+
+
+@tool
+def read_replies(work_order_id: str) -> dict:
+    """New email replies received for this work order."""
+    replies = take_new_replies(work_order_id)
+    return {"work_order_id": work_order_id, "replies": replies,
+            "still_unaccounted": [{"sku": f["sku"], "qty": f["unaccounted_qty"]} for f in _query_facts(work_order_id)]}
+
+
+def _after_resolution(work_order_id: str) -> str:
+    """If every item is now accounted for, send the site back to Finance to reconcile again."""
+    if not _unaccounted(work_order_id) and not _pending_serialized(work_order_id):
+        set_work_order_status(work_order_id, "INSTALLED")
+        return "INSTALLED (ready to reconcile again)"
+    return get_work_order(work_order_id)["status"]
+
+
+@tool
+def record_site_return(work_order_id: str, sku: str, qty: int, returned_by: str) -> dict:
+    """Book unused bulk material that a subcontractor says they are returning to the warehouse."""
+    open_qty = next((u["unaccounted"] for u in _unaccounted(work_order_id) if u["sku"] == sku), 0)
+    if qty <= 0 or qty > open_qty:
+        return {"error": f"{qty} is not valid: only {open_qty} of {sku} is unaccounted on {work_order_id}."}
+    record_return(work_order_id, sku, qty, returned_by, txn_date=get_work_order(work_order_id)["scheduled_date"])
+    log_event("Inventory Agent", "RETURN_BOOKED", {"sku": sku, "qty": qty, "by": returned_by}, work_order_id)
+    return {"status": "RETURN_BOOKED", "sku": sku, "qty": qty, "site_status": _after_resolution(work_order_id)}
+
+
+@tool
+def book_late_quarantine(work_order_id: str, sku: str, serial_number: str, returned_by: str) -> dict:
+    """Book a faulty serialized unit into quarantine when the engineer confirms it is back at the warehouse."""
+    issued = {h["serial_number"] for h in get_outbound_history(work_order_id, sku)}
+    if serial_number not in issued:
+        return {"error": f"{serial_number} was never issued to {work_order_id}."}
+    if not any(u["sku"] == sku and u["unaccounted"] > 0 for u in _unaccounted(work_order_id)):
+        return {"error": f"Nothing unaccounted for {sku} on {work_order_id}."}
+    quarantine_faulty_unit(sku, serial_number, returned_by, work_order_id,
+                           txn_date=get_work_order(work_order_id)["scheduled_date"])
+    record_ledger_quantity(work_order_id, [{"sku": sku, "qty": 1}], "qty_quarantined")
+    log_event("Inventory Agent", "LATE_QUARANTINE", {"sku": sku, "serial": serial_number}, work_order_id)
+    return {"status": "QUARANTINED", "serial": serial_number, "site_status": _after_resolution(work_order_id)}
+
+
+@tool
+def escalate_to_kam(work_order_id: str, reason: str) -> dict:
+    """Hand the site to the Key Accounts Manager when items cannot be recovered (lost, wasted, disputed)."""
+    set_work_order_status(work_order_id, "NEEDS_ATTENTION")
+    log_event("Field Agent", "ESCALATED_TO_KAM", reason, work_order_id)
+    return {"status": "NEEDS_ATTENTION", "reason": reason}
 
 # ---------------------------------------------------------------------------
 # Invoicing & Financial Agent
