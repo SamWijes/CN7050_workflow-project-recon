@@ -24,5 +24,13 @@ def get_llm(temperature: float = 0.0):
     )
 
 
+def get_structured_llm(schema, temperature: float = 0.0):
+    """Structured output that works reliably on both providers. Qwen on Ollama is much better at
+    tool calls than raw JSON mode, so the schema is sent as a function to call."""
+    if PROVIDER == "openai":
+        return get_llm(temperature).with_structured_output(schema)
+    return get_llm(temperature).with_structured_output(schema, method="function_calling")
+
+
 def model_name() -> str:
     return OPENAI_MODEL if PROVIDER == "openai" else OLLAMA_MODEL

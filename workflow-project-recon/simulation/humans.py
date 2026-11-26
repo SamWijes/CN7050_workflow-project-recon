@@ -21,6 +21,17 @@ def _facts_for(message: dict) -> tuple:
         if t["holder"] != me:
             continue
         d = f"{get_sku_description(t['sku'])} ({t['sku']})"
+
+        if t["reply"] == "vague_then_exact":
+            conn = sqlite3.connect(ORCHESTRATOR_DB)
+            earlier = conn.execute("SELECT COUNT(*) FROM mailbox WHERE work_order_id = ? AND direction = 'IN'",
+                                   (message["work_order_id"],)).fetchone()[0]
+            conn.close()
+            if earlier == 0:   # first reply: no number at all
+                return ("You have a few of the conduits left over and will drop them back at the warehouse. "
+                        "Do NOT give a number.",
+                        "Hi, yeah we've got a few of those left over, I'll drop them back at the warehouse.")
+            t = dict(t, reply="returns_balance")
         if t["reply"] == "returns_balance":
             n = t["missing"]
             return (f"You still have {n} unused {d} from the site and will return all {n} to the warehouse today.",
@@ -58,7 +69,9 @@ def simulate_reply(message: dict, use_llm: bool = True) -> dict:
         except Exception:
             body = None
     # Guard: if the model dropped the numbers, use the plain version so the scenario stays correct
-    needed = re.findall(r"\d+|SN-[A-Z-]+-[0-9A-F]+", facts)
-    if not body or not all(tok in body for tok in needed):
+        needed = re.findall(r"\d+|SN-[A-Z-]+-[0-9A-F]+", facts)
+    vague = "Do NOT give a number" in facts
+    leaked = "Do NOT" in body if body else False          # persona instruction copied into the email
+    if not body or leaked or not all(tok in body for tok in needed) or (vague and re.search(r"\d", body)):
         body = fallback
     return deliver_reply(message["message_id"], body)

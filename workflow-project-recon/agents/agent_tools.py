@@ -2,8 +2,11 @@
 LangChain tools for each agent. They wrap the Phase 1 functions and keep their output short,
 because a 7B model works best with small, clear tool results.
 """
+import os
+import json
 import sqlite3
 import threading
+from typing import Optional
 from langchain_core.tools import tool
 
 from agents.events import log_event
@@ -17,8 +20,10 @@ from tools.field_tools import process_field_report, quarantine_faulty_unit
 from tools.inventory_tools import record_return, get_outbound_history, get_sku_description
 from tools.mailbox_tools import send_mail, take_new_replies
 from simulation.field_app import simulate_site_report
+from agents import hitl
 from tools.finance_tools import run_three_way_reconciliation, generate_client_invoice
 from tools.project_tools import get_project_work_orders, source_shortage, dispatch_and_deliver
+
 
 
 def _wo_or_error(work_order_id: str):
@@ -176,6 +181,65 @@ def confirm_site_stock_ready(work_order_id: str) -> dict:
             return {"status": "UNCHANGED", "reason": "Site is not in PLANNED stage."}
     log_event("Inventory Agent", "STOCK_READY", None, work_order_id)
     return {"status": "STOCK_READY", "work_order_id": work_order_id}
+
+# ---------------------------------------------------------------------------
+# Inventory & Sourcing Agent: project level procurement (one PO per part for all sites)
+# ---------------------------------------------------------------------------
+
+def _planned_sites(project_name: str) -> list:
+    return [wo for wo in get_project_work_orders(project_name) if wo["status"] == "PLANNED"]
+
+
+def _project_shortages(project_name: str) -> tuple:
+    """Total shortage for every PLANNED site, after stock already reserved by ready sites."""
+    planned = _planned_sites(project_name)
+    agg = {}
+    for wo in planned:
+        for item in get_work_order_bom(wo["work_order_id"]):
+            a = agg.setdefault(item["sku"], {"sku": item["sku"], "qty": 0, "serialized": item["serialized"]})
+            a["qty"] += item["qty"]
+    reserved = _reserved("")
+    bom = [dict(a, qty=a["qty"] + reserved.get(a["sku"], 0)) for a in agg.values()]
+    shortages = check_bom_stock(bom)["shortages"]
+    need_by = min((wo["scheduled_date"] for wo in planned), default=None)
+    return planned, shortages, need_by
+
+
+@tool
+def check_project_stock(project_name: str) -> dict:
+    """Combined shortage across every PLANNED site in the project (what one project order must cover)."""
+    planned, shortages, need_by = _project_shortages(project_name)
+    return {"project_name": project_name, "planned_sites": [w["work_order_id"] for w in planned], "need_by": need_by,
+            "shortages": [{"sku": s["sku"], "shortage_qty": s["shortage_qty"]} for s in shortages]}
+
+
+@tool
+def plan_project_procurement(project_name: str, strategy: str = "cheapest_on_time") -> dict:
+    """Raises ONE purchase order per part covering every PLANNED site, then marks each site STOCK_READY
+    (earliest date first). strategy: 'cheapest_on_time' or 'fastest'. Reports any order that will be late."""
+    orders, ready, not_ready = [], [], []
+    with _replacement_lock:  # a duplicate call waits, then finds nothing left to order
+        planned, shortages, need_by = _project_shortages(project_name)
+        if not planned:
+            return {"status": "NOTHING_PLANNED", "project_name": project_name}
+        for sh in shortages:
+            suppliers = query_suppliers(sh["sku"], sh["shortage_qty"])
+            pick = min(suppliers, key=lambda x: x["lead_time_days"])["supplier_id"] \
+                if strategy == "fastest" and suppliers else None
+            res = source_shortage(sh["sku"], sh["shortage_qty"], sh["serialized"], need_by, supplier_id=pick)
+            log_event("Inventory Agent", "PROJECT_PO", res)
+            orders.append({k: res.get(k) for k in ("sku", "qty", "supplier", "arrival_date", "late", "status", "reason")})
+        for wo in sorted(planned, key=lambda w: w["scheduled_date"]):
+            if not _site_shortages(wo["work_order_id"]) and _claim(wo["work_order_id"], "PLANNED", "STOCK_READY"):
+                ready.append(wo["work_order_id"])
+                log_event("Inventory Agent", "STOCK_READY", None, wo["work_order_id"])
+            else:
+                not_ready.append(wo["work_order_id"])
+    late = [o for o in orders if o.get("late") or o.get("status") != "RECEIVED_CONFIRMED"]
+    return {"project_name": project_name, "purchase_orders": len(orders), "orders": orders,
+            "sites_ready": ready, "sites_not_ready": not_ready,
+            "conflicts": late, "advice": "If any order is late or failed, use ask_human." if late else "All on time."}
+
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +535,105 @@ def create_invoice(work_order_id: str) -> dict:
         return {"status": "BLOCKED", "issues": [i for d in res["discrepancies"] for i in d["issues"]]}
     return {k: res.get(k) for k in ("status", "invoice_id", "grand_total_gbp", "billing_anomalies")}
 
+# ---------------------------------------------------------------------------
+# Invoicing & Financial Agent: reconciliation policy and batch reconciliation
+# ---------------------------------------------------------------------------
+
+@tool
+def get_reconciliation_policy(project_name: str) -> dict:
+    """When this project should be reconciled: end_of_project, every_n_sites, on_request, or unspecified."""
+    return {"project_name": project_name, **hitl.get_policy(project_name)}
+
+
+@tool
+def set_reconciliation_policy(project_name: str, policy: str, every_n: int = 0, source: str = "") -> dict:
+    """Store the reconciliation policy. policy: 'end_of_project', 'every_n_sites' (give every_n) or 'on_request'.
+    source: where it came from, e.g. 'KAM answer' or 'contract clause'."""
+    res = hitl.set_policy(project_name, policy, every_n, source)
+    if "error" not in res:
+        log_event("Finance Agent", "RECON_POLICY_SET", res)
+    return res
+
+
+@tool
+def reconcile_batch(project_name: str, work_order_ids: list[str]) -> dict:
+    """Three way reconciliation for a batch of installed sites. Clean sites become RECONCILED; sites with
+    discrepancies go to the Field agent for investigation."""
+    clean, issues = [], []
+    for wo in work_order_ids:
+        w = get_work_order(wo)
+        if not w or w["status"] not in ("INSTALLED", "RECONCILED"):
+            continue
+        res = run_three_way_reconciliation(wo)
+        if res.get("reconciled"):
+            clean.append(wo)
+        else:
+            issues.append({"work_order_id": wo, "issues": [i for d in res.get("discrepancies", []) for i in d["issues"]]})
+    log_event("Finance Agent", "BATCH_RECONCILED", {"clean": clean, "discrepancies": [i["work_order_id"] for i in issues]})
+    return {"reconciled": clean, "discrepancies": issues,
+            "next_step": "create_batch_invoice for the reconciled sites" if clean else "nothing to invoice"}
+
+
+@tool
+def create_batch_invoice(project_name: str, work_order_ids: list[str]) -> dict:
+    """One consolidated invoice (contract rates, a section per site) for the RECONCILED sites in this batch.
+    It is held for human sign off."""
+    with _replacement_lock:
+        wos = [wo for wo in work_order_ids if (get_work_order(wo) or {}).get("status") == "RECONCILED"]
+        if not wos:
+            return {"error": "No RECONCILED sites in this batch (already invoiced, or reconcile_batch first)."}
+        sites, invoice_ids, anomalies = [], [], False
+        for wo in wos:
+            inv = generate_client_invoice(wo)
+            if inv["status"] == "BLOCKED":
+                continue
+            invoice_ids.append(inv["invoice_id"])
+            anomalies = anomalies or bool(inv["billing_anomalies"])
+            with open(inv["invoice_file"], encoding="utf-8") as f:
+                sites.append(json.load(f))
+        if not invoice_ids:
+            return {"error": "Every site in the batch failed final reconciliation."}
+        n = len([1 for b in os.listdir("invoices") if b.startswith(f"BATCH-{project_name}-")]) + 1
+        batch_id = f"BATCH-{project_name}-{n:02d}"
+        subtotal = round(sum(s["subtotal_gbp"] for s in sites), 2)
+        doc = {"batch_id": batch_id, "project_name": project_name, "currency": "GBP",
+               "sites": [{"site_id": s["site_id"], "work_order_id": s["work_order_id"], "lines": s["lines"],
+                          "subtotal_gbp": s["subtotal_gbp"]} for s in sites],
+               "subtotal_gbp": subtotal, "vat_20pct_gbp": round(subtotal * 0.2, 2),
+               "grand_total_gbp": round(subtotal * 1.2, 2), "billing_anomalies": anomalies,
+               "status": "PENDING_APPROVAL"}
+        path = os.path.join("invoices", f"{batch_id}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2)
+        hitl.save_batch(batch_id, project_name, wos, invoice_ids, doc["grand_total_gbp"], anomalies, path)
+    log_event("Finance Agent", "BATCH_INVOICE", {"batch": batch_id, "sites": wos, "total": doc["grand_total_gbp"]})
+    return {"status": "PENDING_APPROVAL", "batch_id": batch_id, "sites": wos, "grand_total_gbp": doc["grand_total_gbp"],
+            "billing_anomalies": anomalies}
+
+
+# ---------------------------------------------------------------------------
+# ask_human: every agent gets its own copy, so the question records who asked
+# ---------------------------------------------------------------------------
+
+def make_ask_human(agent_display: str):
+    @tool
+    def ask_human(question: str, options: Optional[list[str]] = None, work_order_id: str = "",
+                  project_name: str = "") -> dict:
+        """Ask the Key Accounts Manager when you face a real conflict that your tools and the policy documents
+        cannot settle. Give a clear question and 2 to 4 short options. Pass work_order_id for a site question
+        (that site pauses until answered) or project_name for a project question. Other sites carry on."""
+        wo = work_order_id or None
+        project = project_name or ((get_work_order(wo) or {}).get("project_name") if wo else None)
+        if not project:
+            return {"error": "Give a valid work_order_id or project_name."}
+        if isinstance(options, str):
+            options = [o.strip() for o in options.split(",") if o.strip()]
+        res = hitl.ask(project, agent_display, question, options, wo)
+        if res["status"] == "ASKED":
+            log_event(agent_display, "QUESTION -> KAM", {"question": question, "options": options}, wo)
+        return {**res, "note": "Stop here. You will get the answer in a later turn."
+                if res["status"] in ("ASKED", "ALREADY_ASKED") else res.get("reason")}
+    return ask_human
 
 SHARED_TOOLS = [search_knowledge, get_site_status, list_project_sites]
 INVENTORY_TOOLS = [check_site_stock, order_site_shortages, confirm_site_stock_ready, compare_suppliers, get_stock_level]

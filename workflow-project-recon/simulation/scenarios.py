@@ -14,6 +14,8 @@ SCENARIOS = {
     "qty_mismatch": {"bulk_sku": "UPVC-20", "missing_pct": 0.15, "reply": "returns_balance"},
     # As above, but the subcon only returns part of it (offcuts wasted) -> agent must escalate
     "qty_mismatch_wastage": {"bulk_sku": "PWR-CBL-2C-20", "missing_pct": 0.20, "reply": "wastage"},
+        # Subcon replies vaguely ("a few left over") the first time -> Field agent should ask the KAM / chase again
+    "qty_mismatch_vague": {"bulk_sku": "UPVC-20", "missing_pct": 0.15, "reply": "vague_then_exact"},
     # A unit fails, a replacement is issued, but the faulty unit never reaches quarantine
     "faulty_unaccounted": {"fault_sku": "PSU-01", "reply": "returned_late"},
     # As above, but the engineer cannot find the faulty unit -> agent must escalate

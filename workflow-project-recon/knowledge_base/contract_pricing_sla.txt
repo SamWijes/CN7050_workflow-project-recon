@@ -18,4 +18,6 @@ SLA-RECON-03: Any serialized item that is dispatched but neither installed, quar
 
 SLA-BILLING-02: Any invoice line item that deviates from the contracted unit rate by more than the allowed variance must be flagged as a billing anomaly and held for Key Accounts Manager review.
 
+SLA-BILLING-04: The contract does not fix a reconciliation or billing frequency. Reconciliation and billing frequency (for example at the end of the project, every N completed sites, or on request) must be agreed per project with the Key Accounts Manager before the first reconciliation. Each reconciliation batch is billed as one consolidated invoice with a section per site.
+
 SLA-SIGNOFF-01: No invoice may be posted and no work order closed until both the Key Accounts Manager and the client have approved the billing package.
