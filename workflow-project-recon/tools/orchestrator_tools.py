@@ -216,3 +216,29 @@ def plan_multi_site_rollout(project_name: str, full_sites: int = 0, upgrades: in
             "project_name": project_name, "total_sites_scheduled": len(work_orders),
             "start_date": start_date, "end_date": current_date.strftime("%Y-%m-%d"),
             "aggregated_bom": list(aggregated.values()), "work_orders": work_orders, "failures": failures}
+
+
+
+# ---------------------------------------------------------------------------
+# Work order lookups (used by the LangGraph agents)
+# ---------------------------------------------------------------------------
+
+def get_work_order(work_order_id: str) -> dict:
+    conn = sqlite3.connect(ORCHESTRATOR_DB)
+    row = conn.execute("""
+        SELECT work_order_id, project_name, site_id, site_category, scheduled_date, subcon_id, engineer_id, status
+        FROM work_orders WHERE work_order_id = ?
+    """, (work_order_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    keys = ["work_order_id", "project_name", "site_id", "site_category", "scheduled_date",
+            "subcon_id", "engineer_id", "status"]
+    return dict(zip(keys, row))
+
+
+def set_work_order_status(work_order_id: str, status: str) -> None:
+    conn = sqlite3.connect(ORCHESTRATOR_DB)
+    conn.execute("UPDATE work_orders SET status = ? WHERE work_order_id = ?", (status, work_order_id))
+    conn.commit()
+    conn.close()

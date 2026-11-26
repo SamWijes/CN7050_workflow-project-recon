@@ -31,20 +31,23 @@ def choose_supplier(suppliers: list, need_by: str, order_date: str) -> dict:
         return min(on_time, key=lambda s: s["unit_price_gbp"])
     return min(suppliers, key=lambda s: s["lead_time_days"])
 
-
-def source_shortage(sku: str, qty: int, serialized: bool, need_by: str, order_date: str = None) -> dict:
-    """PO -> inbound shipment -> packing list check -> stock booked in."""
+def source_shortage(sku: str, qty: int, serialized: bool, need_by: str, order_date: str = None,
+                    supplier_id: str = None) -> dict:
+    """PO -> inbound shipment -> packing list check -> stock booked in. supplier_id lets an agent pick."""
     order_date = order_date or datetime.now().strftime("%Y-%m-%d")
     suppliers = query_suppliers(sku, qty)
     if not suppliers:
         return {"sku": sku, "status": "FAILED", "reason": f"No supplier can supply {qty} of {sku}"}
-    chosen = choose_supplier(suppliers, need_by, order_date)
+    chosen = next((s for s in suppliers if s["supplier_id"] == supplier_id), None) if supplier_id else None
+    chosen = chosen or choose_supplier(suppliers, need_by, order_date)
     po = create_purchase_order(chosen["supplier_id"], sku, qty)
     if po["status"] != "ORDERED":
         return {"sku": sku, "status": "FAILED", "reason": po["reason"]}
 
     arrival = (datetime.strptime(order_date, "%Y-%m-%d") + timedelta(days=chosen["lead_time_days"])).strftime("%Y-%m-%d")
-    ship = schedule_inbound_shipment(po["po_id"], 1, arrival, serialized)
+    # Pallet space scales with quantity (10 serialized units or 500 bulk units per pallet)
+    pallets = max(0.05, round(qty / (10 if serialized else 500), 2))
+    ship = schedule_inbound_shipment(po["po_id"], pallets, arrival, serialized)
     if ship["status"] != "CLEARED_AND_SCHEDULED":
         return {"sku": sku, "po_id": po["po_id"], "status": ship["status"], "reason": ship.get("reason")}
     inbound = verify_and_inbound_packing_list(ship["shipment_id"], ship["packing_list"], txn_date=arrival)

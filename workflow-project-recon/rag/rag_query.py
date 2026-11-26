@@ -22,6 +22,18 @@ llm_client = OpenAI(
     api_key="ollama"
 )
 
+SOURCES = {
+    "fault_manual": "telecom_fault_manual.txt",
+    "contract": "contract_pricing_sla.txt",
+}
+
+
+def retrieve_policies(query: str, source: str = None, top_k: int = 2) -> list:
+    """Retrieval only. The calling agent decides when to search and reasons over the result itself."""
+    params = {"query_embeddings": embed_model.encode([query]).tolist(), "n_results": top_k}
+    if source in SOURCES:
+        params["where"] = {"source": SOURCES[source]}
+    return collection.query(**params)["documents"][0]
 
 def query_telecom_rag(user_query: str, source_filter: str = None, top_k: int = 2) -> dict:
     
