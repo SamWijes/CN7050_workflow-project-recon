@@ -6,6 +6,10 @@
 #email outputs
 outbox/
 
+# databases and invoices generated
+databases/
+invoices/
+
 # Python
 venv/
 .venv/
