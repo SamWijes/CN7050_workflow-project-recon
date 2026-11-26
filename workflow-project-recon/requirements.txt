@@ -1,14 +1,18 @@
-
-crewai
+# LLM runtime (local)
+ollama
 openai
 python-dotenv
 
+# Orchestration (Phase 2)
+langgraph
+langchain-core
+langchain-ollama
 
+# RAG
 chromadb
 sentence-transformers
-pypdf
 
-
+# ML (Section 3.3)
 scikit-learn
 pandas
 numpy
@@ -16,6 +20,5 @@ joblib
 matplotlib
 seaborn
 
-fastapi
-uvicorn
-pydantic
+# UI (Phase 4)
+streamlit

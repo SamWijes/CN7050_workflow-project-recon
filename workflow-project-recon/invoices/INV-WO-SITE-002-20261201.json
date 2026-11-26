@@ -1,0 +1,49 @@
+{
+  "invoice_id": "INV-WO-SITE-002-20261201",
+  "work_order_id": "WO-SITE-002-20261201",
+  "site_id": "SITE-002",
+  "issued_date": "2026-11-25",
+  "currency": "GBP",
+  "lines": [
+    {
+      "sku": "SKU-RU-5G",
+      "qty_installed": 3,
+      "unit_price_gbp": 2415.0,
+      "line_total_gbp": 7245.0
+    },
+    {
+      "sku": "SKU-BBU-01",
+      "qty_installed": 1,
+      "unit_price_gbp": 3220.0,
+      "line_total_gbp": 3220.0
+    },
+    {
+      "sku": "SKU-ANT-04",
+      "qty_installed": 3,
+      "unit_price_gbp": 862.5,
+      "line_total_gbp": 2587.5
+    },
+    {
+      "sku": "SKU-FBR-10",
+      "qty_installed": 10,
+      "unit_price_gbp": 25.3,
+      "line_total_gbp": 253.0
+    },
+    {
+      "sku": "SKU-UPVC-20",
+      "qty_installed": 50,
+      "unit_price_gbp": 1.72,
+      "line_total_gbp": 86.0
+    },
+    {
+      "sku": "SKU-CBL-TIE",
+      "qty_installed": 10,
+      "unit_price_gbp": 4.6,
+      "line_total_gbp": 46.0
+    }
+  ],
+  "subtotal_gbp": 13437.5,
+  "vat_20pct_gbp": 2687.5,
+  "grand_total_gbp": 16125.0,
+  "status": "ISSUED"
+}

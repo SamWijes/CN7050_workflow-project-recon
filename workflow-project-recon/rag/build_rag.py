@@ -6,29 +6,19 @@ KB_DIR = "knowledge_base"
 DB_PATH = "./telecom_vectordb"
 COLLECTION_NAME = "telecom_policies"
 
-def load_and_chunk_files(directory, chunk_size=300, overlap=50):
-    chunks = []
-    metadatas = []
-    ids = []
-    doc_counter = 0
-
-    for filename in os.listdir(directory):
-        if filename.endswith(".txt"):
-            filepath = os.path.join(directory, filename)
-            with open(filepath, "r", encoding="utf-8") as f:
-                text = f.read()
-
-            start = 0
-            while start < len(text):
-                end = start + chunk_size
-                chunk_text = text[start:end].strip()
-                if chunk_text:
-                    chunks.append(chunk_text)
-                    metadatas.append({"source": filename})
-                    ids.append(f"doc_{doc_counter}")
-                    doc_counter += 1
-                start += chunk_size - overlap
-
+def load_and_chunk_files(directory):
+    """One chunk per policy entry (paragraphs separated by a blank line), so a rule is never split in half."""
+    chunks, metadatas, ids = [], [], []
+    for filename in sorted(os.listdir(directory)):
+        if not filename.endswith(".txt"):
+            continue
+        with open(os.path.join(directory, filename), "r", encoding="utf-8") as f:
+            text = f.read()
+        for i, block in enumerate(p.strip() for p in text.split("\n\n")):
+            if block:
+                chunks.append(block)
+                metadatas.append({"source": filename})
+                ids.append(f"{filename}_{i}")
     return chunks, metadatas, ids
 
 def build_vector_db():
@@ -41,6 +31,10 @@ def build_vector_db():
 
     print(f"Indexing into ChromaDB at '{DB_PATH}'...")
     client = chromadb.PersistentClient(path=DB_PATH)
+    try:
+        client.delete_collection(COLLECTION_NAME)  # rebuild cleanly, no stale chunks
+    except Exception:
+        pass
     collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
     embeddings = embed_model.encode(chunks).tolist()

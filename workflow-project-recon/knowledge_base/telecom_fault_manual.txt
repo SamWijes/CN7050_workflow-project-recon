@@ -1,21 +1,41 @@
 TELECOM FIELD EXECUTION & FAULT REPLACEMENT MANUAL (REV 2026)
 
-FAULT-101: Radio Unit (RU) Power Failure / Dead on Arrival (DOA).
+FAULT-101: Outdoor Cabinet physical damage (dented door, broken seal, water ingress risk). Part: CAB-OUT-01.
 Severity: Critical.
-Action: Quarantine the defective unit, record serial number in field log, and trigger an immediate direct replenishment request to the Inventory & Sourcing Agent.
+Action: Do not install. Photograph damage, quarantine the cabinet, record serial number and trigger an immediate direct replenishment request to the Inventory & Sourcing Agent.
 
-FAULT-102: Baseband Unit (BBU) Optical Port Failure.
+FAULT-102: Baseband Unit (BBU) optical port failure or loss of signal (LOS) that persists after connector cleaning. Part: BBU-01.
 Severity: Critical.
-Action: Log serial number, move to quarantine, and trigger direct replacement dispatch via Inventory & Sourcing Agent.
+Action: Log serial number, move to quarantine and trigger direct replacement dispatch via the Inventory & Sourcing Agent.
 
-FAULT-103: Fiber Patch Cord Attenuation or Connector Damage.
+FAULT-103: Battery low voltage at commissioning (below 46V) or swollen casing. Part: BAT-48V-01.
+Severity: Critical (safety).
+Action: Isolate immediately, quarantine the battery, record serial number and trigger direct replenishment. Never install a swollen battery.
+
+FAULT-104: Power Supply Unit (PSU) no output or status LED off after power on. Part: PSU-01.
+Severity: Critical.
+Action: Verify input breaker once. If still no output, quarantine the PSU and trigger direct replenishment.
+
+FAULT-105: Control & Clock (CC) card boot loop or never reaching operational state. Part: CARD-CC-01.
+Severity: Critical.
+Action: Reseat once and reload software. If the boot loop continues, quarantine the card and trigger direct replenishment.
+
+FAULT-106: Baseband Processing (BBN) card not detected by the BBU after reseating. Part: CARD-BBN-01.
+Severity: Critical.
+Action: Quarantine the card, record serial number and trigger direct replenishment.
+
+FAULT-107: Rectifier shelf mains input alarm while mains supply is present. Part: RECT-01.
+Severity: Major.
+Action: Check input wiring. If the alarm persists, quarantine the rectifier shelf and trigger direct replenishment.
+
+FAULT-108: SMR module fault LED or zero current sharing. Part: SMR-01.
+Severity: Major.
+Action: Quarantine the SMR module and trigger direct replenishment. The site may run on the remaining modules meanwhile.
+
+FAULT-109: Fiber cable attenuation or connector damage. Part: FBR-CBL-01.
 Severity: Minor.
-Action: Replace on-site using standard subcontractor consumable kit. No warehouse replenishment required.
+Action: Replace on site from the subcontractor consumable kit. No warehouse replenishment required.
 
-FAULT-104: Antenna Mounting Bracket Corrosion / Misalignment.
+FAULT-110: Mounting bracket or base plate corrosion or misalignment. Parts: MNT-BRK-01, BASE-PLT-01.
 Severity: Moderate.
-Action: If structural damage is confirmed, log photo evidence and request replacement bracket from warehouse. Minor alignment issues must be resolved on-site.
-
-FAULT-105: GPS Module Sync Timeout.
-Severity: Minor.
-Action: Perform firmware reset and verify sky view. Only trigger hardware replenishment if unit fails after 2 consecutive resets.
+Action: Minor alignment issues must be resolved on site. Only request replacement from warehouse if structural damage is confirmed with photo evidence.

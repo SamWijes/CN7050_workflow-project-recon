@@ -1,10 +1,21 @@
 TELECOM PROJECT CONTRACT PRICING & SLA SCHEDULE (2026)
 
-SKU-RU-5G: 5G Radio Unit (Standard). Contract Unit Rate: £2,450.00. Max Allowed Variance: 0%.
-SKU-BBU-01: Baseband Unit. Contract Unit Rate: £3,100.00. Max Allowed Variance: 0%.
-SKU-ANT-04: Sector Antenna (Tri-band). Contract Unit Rate: £850.00. Max Allowed Variance: 2%.
-SKU-FBR-10: Fiber Patch Cord (10m). Contract Unit Rate: £25.00 (Covered under consumable allowance up to 10 units/site).
+CABINET KIT RATES (serialized, max allowed variance 0%): CAB-OUT-01 Outdoor Telecom Cabinet £4,200.00. BAT-48V-01 48V 100Ah Lithium Battery £380.00. PSU-01 Power Supply Unit £650.00. BBU-01 Baseband Unit £3,100.00. CARD-CC-01 CC Card £1,250.00. CARD-BBN-01 BBN Card £980.00. RECT-01 Rectifier Shelf £720.00. SMR-01 SMR Module £310.00.
 
-LABOR-INSTALL-5G: Standard 5G Site Installation Labor. Fixed Rate: £1,800.00 per site.
-SLA-RECON-01: Three-way reconciliation rule strictly requires Quantity Dispatched = Quantity Installed + Quantity Quarantined before any invoice is routed for client sign-off.
-SLA-BILLING-02: Any invoice line item exceeding the contracted unit rate by more than the allowed variance must be flagged as a billing anomaly and held for Key Accounts Manager review.
+SITE MATERIAL RATES (bulk, max allowed variance 2%): FBR-CBL-01 Fiber Optic Cable £45.00 each. MNT-BRK-01 Mounting Bracket £120.00. BASE-PLT-01 Cabinet Base Plate £260.00.
+
+CIVIL MATERIAL RATES (bulk, max allowed variance 5%): UPVC-20 20mm uPVC Conduit £1.50 per piece. PWR-CBL-2C-20 20mm 2 Core Power Cable £3.20 per metre. uPVC conduit and power cable quantities must be proportional to the cable run of the site.
+
+CONSUMABLES: TIE-150 150mm UV Cable Ties are covered by the consumable allowance and are not billed to the client.
+
+LABOUR RATES (fixed per site): LAB-FULL Full Site Installation £1,800.00. LAB-PARTIAL Cabinet Installation £1,100.00. LAB-UPGRADE BBU Upgrade £600.00.
+
+SLA-RECON-01: Reconciliation strictly requires Quantity Dispatched = Quantity Installed + Quantity Quarantined + Quantity Returned for every item, and the dispatched quantity must match the carrier proof of delivery, before any invoice is routed for client sign off.
+
+SLA-RECON-02: Any unused bulk material must be returned to the warehouse by the subcontractor and booked as a RETURN before the site can be reconciled.
+
+SLA-RECON-03: Any serialized item that is dispatched but neither installed, quarantined nor returned must be investigated with the collecting engineer, quoting part number, serial number and outbound date.
+
+SLA-BILLING-02: Any invoice line item that deviates from the contracted unit rate by more than the allowed variance must be flagged as a billing anomaly and held for Key Accounts Manager review.
+
+SLA-SIGNOFF-01: No invoice may be posted and no work order closed until both the Key Accounts Manager and the client have approved the billing package.

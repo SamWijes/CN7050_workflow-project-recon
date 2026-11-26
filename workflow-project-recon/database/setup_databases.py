@@ -14,19 +14,108 @@ SUPPLIERS_DB = "databases/suppliers.db"
 LOGISTICS_DB = "databases/logistics_transport.db"
 BOM_FILE = "mock_apis/bom_templates.json"
 
+# ---------------------------------------------------------------------------
+# Single source of truth for every SKU used in the system
+# (sku, description, serialized, unit, contract_rate_gbp, allowed_variance_pct, billable)
+# ---------------------------------------------------------------------------
+SKU_MASTER = [
+    # Cabinet kit (all serialized)
+    ("CAB-OUT-01",    "Outdoor Telecom Cabinet",              1, "pcs", 4200.00, 0.0, 1),
+    ("BAT-48V-01",    "48V 100Ah Lithium Battery",            1, "pcs",  380.00, 0.0, 1),
+    ("PSU-01",        "Power Supply Unit",                    1, "pcs",  650.00, 0.0, 1),
+    ("BBU-01",        "Baseband Unit",                        1, "pcs", 3100.00, 0.0, 1),
+    ("CARD-CC-01",    "Control & Clock (CC) Card",            1, "pcs", 1250.00, 0.0, 1),
+    ("CARD-BBN-01",   "Baseband Processing (BBN) Card",       1, "pcs",  980.00, 0.0, 1),
+    ("RECT-01",       "Rectifier Shelf",                      1, "pcs",  720.00, 0.0, 1),
+    ("SMR-01",        "Switch Mode Rectifier (SMR) Module",   1, "pcs",  310.00, 0.0, 1),
+    # Site passive materials (bulk, not serialized)
+    ("FBR-CBL-01",    "Fiber Optic Cable",                    0, "pcs",   45.00, 2.0, 1),
+    ("MNT-BRK-01",    "Mounting Bracket",                     0, "pcs",  120.00, 2.0, 1),
+    ("BASE-PLT-01",   "Cabinet Base Plate",                   0, "pcs",  260.00, 2.0, 1),
+    ("UPVC-20",       "20mm uPVC Conduit",                    0, "pcs",    1.50, 5.0, 1),
+    ("PWR-CBL-2C-20", "20mm 2 Core Power Cable",              0, "m",      3.20, 5.0, 1),
+    ("TIE-150",       "150mm UV Cable Tie",                   0, "pcs",    0.05, 0.0, 0),  # consumable
+]
+
+LABOUR_RATES = [
+    ("LAB-FULL",    "full_site",    "Full Site Installation Labour",    1800.00),
+    ("LAB-PARTIAL", "partial_site", "Cabinet Installation Labour",      1100.00),
+    ("LAB-UPGRADE", "upgrade",      "BBU Upgrade Labour",                600.00),
+]
+
+BOM_TEMPLATES = {
+    "kits": {
+        "cabinet": [
+            {"sku": "CAB-OUT-01",  "qty": 1},
+            {"sku": "BAT-48V-01",  "qty": 8},
+            {"sku": "PSU-01",      "qty": 1},
+            {"sku": "BBU-01",      "qty": 1},
+            {"sku": "CARD-CC-01",  "qty": 1},
+            {"sku": "CARD-BBN-01", "qty": 1},
+            {"sku": "RECT-01",     "qty": 1},
+            {"sku": "SMR-01",      "qty": 3},
+        ],
+        "bbu_swap": [
+            {"sku": "PSU-01",      "qty": 1},
+            {"sku": "BBU-01",      "qty": 1},
+            {"sku": "CARD-CC-01",  "qty": 1},
+            {"sku": "CARD-BBN-01", "qty": 1},
+        ],
+    },
+    "full_site": {
+        "kits": ["cabinet"],
+        "fixed": [
+            {"sku": "FBR-CBL-01",  "qty": 3},
+            {"sku": "MNT-BRK-01",  "qty": 3},
+            {"sku": "BASE-PLT-01", "qty": 1},
+        ],
+        "ranged": [
+            {"sku": "TIE-150", "min": 100, "max": 200},
+        ],
+        # One random "cable run" factor per site keeps conduit and cable proportional
+        "linked": {
+            "factor": "cable_run",
+            "items": [
+                {"sku": "UPVC-20",       "min": 20, "max": 90},
+                {"sku": "PWR-CBL-2C-20", "min": 20, "max": 180},
+            ],
+        },
+    },
+    "partial_site": {"kits": ["cabinet"]},
+    "upgrade": {"kits": ["bbu_swap"]},
+}
+
+
+def _fresh(path, force_reset):
+    if os.path.exists(path) and not force_reset:
+        print(f"Using existing {path}")
+        return False
+    if os.path.exists(path):
+        os.remove(path)
+    return True
+
+
+def _create_sku_master(cur):
+    cur.execute("""
+    CREATE TABLE sku_master (
+        sku TEXT PRIMARY KEY,
+        item_description TEXT NOT NULL,
+        serialized INTEGER NOT NULL,
+        unit TEXT NOT NULL
+    )
+    """)
+    cur.executemany(
+        "INSERT INTO sku_master VALUES (?, ?, ?, ?)",
+        [(s, d, ser, u) for s, d, ser, u, *_ in SKU_MASTER],
+    )
+
 
 def setup_orchestrator_db(force_reset: bool = False):
-    if os.path.exists(ORCHESTRATOR_DB) and not force_reset:
-        print(f"Using existing {ORCHESTRATOR_DB}")
+    if not _fresh(ORCHESTRATOR_DB, force_reset):
         return
-
-    if os.path.exists(ORCHESTRATOR_DB):
-        os.remove(ORCHESTRATOR_DB)
-
     conn = sqlite3.connect(ORCHESTRATOR_DB)
     cur = conn.cursor()
 
-    # 5 Subcontractors (Subcon-A to E) & 5 Internal Engineers (Engineer-A to E)
     cur.execute("""
     CREATE TABLE resources (
         resource_id TEXT PRIMARY KEY,
@@ -36,7 +125,6 @@ def setup_orchestrator_db(force_reset: bool = False):
     )
     """)
 
-    # Enforces: every site has 1 Subcon + 1 Engineer, and neither can be double-booked on the same date
     cur.execute("""
     CREATE TABLE work_orders (
         work_order_id TEXT PRIMARY KEY,
@@ -54,23 +142,25 @@ def setup_orchestrator_db(force_reset: bool = False):
     )
     """)
 
-    # 3-way reconciliation ledger: Dispatched = Installed + Quarantined
+    # Reconciliation: Dispatched = Installed + Quarantined + Returned
     cur.execute("""
     CREATE TABLE reconciliation_ledger (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         work_order_id TEXT NOT NULL,
         site_id TEXT NOT NULL,
         sku TEXT NOT NULL,
+        serialized INTEGER NOT NULL,
         qty_planned INTEGER NOT NULL,
         qty_dispatched INTEGER DEFAULT 0,
         qty_installed INTEGER DEFAULT 0,
         qty_quarantined INTEGER DEFAULT 0,
+        qty_returned INTEGER DEFAULT 0,
         reconciliation_status TEXT DEFAULT 'PENDING',
+        UNIQUE(work_order_id, sku),
         FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id)
     )
     """)
 
-    # Simulated email audit log (Subcons, Engineers, WH)
     cur.execute("""
     CREATE TABLE email_outbox (
         email_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,23 +173,47 @@ def setup_orchestrator_db(force_reset: bool = False):
     )
     """)
 
-    resources = [
-        ("Subcon-A", "Subcontractor Team A", "SUBCONTRACTOR", "subcon.a@contractors.local"),
-        ("Subcon-B", "Subcontractor Team B", "SUBCONTRACTOR", "subcon.b@contractors.local"),
-        ("Subcon-C", "Subcontractor Team C", "SUBCONTRACTOR", "subcon.c@contractors.local"),
-        ("Subcon-D", "Subcontractor Team D", "SUBCONTRACTOR", "subcon.d@contractors.local"),
-        ("Subcon-E", "Subcontractor Team E", "SUBCONTRACTOR", "subcon.e@contractors.local"),
-        ("Engineer-A", "Internal Engineer A", "ENGINEER", "engineer.a@intellicommstech.local"),
-        ("Engineer-B", "Internal Engineer B", "ENGINEER", "engineer.b@intellicommstech.local"),
-        ("Engineer-C", "Internal Engineer C", "ENGINEER", "engineer.c@intellicommstech.local"),
-        ("Engineer-D", "Internal Engineer D", "ENGINEER", "engineer.d@intellicommstech.local"),
-        ("Engineer-E", "Internal Engineer E", "ENGINEER", "engineer.e@intellicommstech.local"),
-    ]
-
-    cur.executemany(
-        "INSERT INTO resources (resource_id, name, role, email) VALUES (?, ?, ?, ?)",
-        resources,
+    cur.execute("""
+    CREATE TABLE contract_rates (
+        code TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        rate_type TEXT NOT NULL CHECK(rate_type IN ('MATERIAL', 'LABOUR')),
+        site_category TEXT,
+        unit_rate_gbp REAL NOT NULL,
+        allowed_variance_pct REAL NOT NULL,
+        billable INTEGER NOT NULL
     )
+    """)
+    cur.executemany(
+        "INSERT INTO contract_rates VALUES (?, ?, 'MATERIAL', NULL, ?, ?, ?)",
+        [(s, d, rate, var, bill) for s, d, _, _, rate, var, bill in SKU_MASTER],
+    )
+    cur.executemany(
+        "INSERT INTO contract_rates VALUES (?, ?, 'LABOUR', ?, ?, 0.0, 1)",
+        [(code, desc, cat, rate) for code, cat, desc, rate in LABOUR_RATES],
+    )
+
+    cur.execute("""
+    CREATE TABLE invoices (
+        invoice_id TEXT PRIMARY KEY,
+        work_order_id TEXT NOT NULL,
+        grand_total_gbp REAL NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'HELD_ANOMALY')),
+        anomalies_json TEXT,
+        created_date TEXT NOT NULL,
+        approved_by TEXT,
+        approved_at TEXT
+    )
+    """)
+
+    resources = []
+    for letter in "ABCDE":
+        resources.append((f"Subcon-{letter}", f"Subcontractor Team {letter}", "SUBCONTRACTOR",
+                          f"subcon.{letter.lower()}@contractors.local"))
+    for letter in "ABCDE":
+        resources.append((f"Engineer-{letter}", f"Internal Engineer {letter}", "ENGINEER",
+                          f"engineer.{letter.lower()}@intellicommstech.local"))
+    cur.executemany("INSERT INTO resources VALUES (?, ?, ?, ?)", resources)
 
     conn.commit()
     conn.close()
@@ -107,17 +221,12 @@ def setup_orchestrator_db(force_reset: bool = False):
 
 
 def setup_wms_db(force_reset: bool = False):
-    if os.path.exists(WMS_DB) and not force_reset:
-        print(f"Using existing {WMS_DB}")
+    if not _fresh(WMS_DB, force_reset):
         return
-
-    if os.path.exists(WMS_DB):
-        os.remove(WMS_DB)
-
     conn = sqlite3.connect(WMS_DB)
     cur = conn.cursor()
+    _create_sku_master(cur)
 
-    # Ledger: +1/-1 per serialized unit; +qty/-qty for bulk local purchases
     cur.execute("""
     CREATE TABLE wms_ledger (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,24 +236,31 @@ def setup_wms_db(force_reset: bool = False):
         qty INTEGER NOT NULL,
         transaction_date TEXT NOT NULL,
         handled_by TEXT NOT NULL,
-        transaction_type TEXT NOT NULL CHECK(transaction_type IN ('INBOUND', 'OUTBOUND', 'QUARANTINE')),
+        transaction_type TEXT NOT NULL CHECK(transaction_type IN ('INBOUND', 'OUTBOUND', 'QUARANTINE', 'RETURN')),
         reference TEXT
     )
     """)
 
-    # Live stock view (excludes quarantined units)
+    # Available stock: quarantined units never count as available
     cur.execute("""
     CREATE VIEW current_stock AS
-    SELECT
-        sku,
-        item_description,
-        SUM(qty) AS available_qty
+    SELECT sku, item_description, SUM(qty) AS available_qty
     FROM wms_ledger
     WHERE transaction_type != 'QUARANTINE'
     GROUP BY sku, item_description
     """)
 
-    # Warehouse bays for Inventory <-> Logistics inbound spacing coordination
+    # Serials that are physically on the shelf and not faulty
+    cur.execute("""
+    CREATE VIEW available_serials AS
+    SELECT sku, serial_number
+    FROM wms_ledger
+    WHERE serial_number IS NOT NULL
+    GROUP BY sku, serial_number
+    HAVING SUM(CASE WHEN transaction_type != 'QUARANTINE' THEN qty ELSE 0 END) > 0
+       AND SUM(CASE WHEN transaction_type = 'QUARANTINE' THEN 1 ELSE 0 END) = 0
+    """)
+
     cur.execute("""
     CREATE TABLE wh_bays (
         bay_id TEXT PRIMARY KEY,
@@ -154,47 +270,41 @@ def setup_wms_db(force_reset: bool = False):
     )
     """)
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    seed_date = "2026-11-20"
+    desc = {s: d for s, d, *_ in SKU_MASTER}
 
-    initial_ledger = [
-        # Serialized Telecom Hardware (+1 per row)
-        # Note: Only 2 SKU-RU-5G available (1 already dispatched) so a full_site (needs 3) triggers sourcing
-        ("SKU-RU-5G",  "5G Radio Unit (Standard)", "SN-RU-1001", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-01"),
-        ("SKU-RU-5G",  "5G Radio Unit (Standard)", "SN-RU-1002", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-01"),
-        ("SKU-RU-5G",  "5G Radio Unit (Standard)", "SN-RU-1003", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-01"),
-        ("SKU-RU-5G",  "5G Radio Unit (Standard)", "SN-RU-1003", -1, today, "Subcon-A", "OUTBOUND", "SITE-099"),
+    # Opening stock: deliberately short on some cabinet items so sourcing triggers
+    serial_stock = {
+        "CAB-OUT-01": 2, "BAT-48V-01": 16, "PSU-01": 3, "BBU-01": 3,
+        "CARD-CC-01": 3, "CARD-BBN-01": 3, "RECT-01": 2, "SMR-01": 6,
+    }
+    bulk_stock = {
+        "FBR-CBL-01": 10, "MNT-BRK-01": 6, "BASE-PLT-01": 2,
+        "UPVC-20": 300, "PWR-CBL-2C-20": 600, "TIE-150": 1000,
+    }
 
-        ("SKU-BBU-01", "Baseband Unit", "SN-BBU-2001", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-01"),
-        ("SKU-BBU-01", "Baseband Unit", "SN-BBU-2002", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-01"),
-
-        ("SKU-ANT-04", "Sector Antenna (Tri-band)", "SN-ANT-3001", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-02"),
-        ("SKU-ANT-04", "Sector Antenna (Tri-band)", "SN-ANT-3002", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-02"),
-        ("SKU-ANT-04", "Sector Antenna (Tri-band)", "SN-ANT-3003", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-02"),
-        ("SKU-ANT-04", "Sector Antenna (Tri-band)", "SN-ANT-3004", 1, today, "John Doe (WH Inbound)", "INBOUND", "PO-INIT-02"),
-
-        # Bulk / Local Purchases (No serial number)
-        ("SKU-UPVC-20", "20mm uPVC Conduit Pipe (Local)", None, 1000, today, "Sarah Lee (Local Procurement)", "INBOUND", "LP-2026-01"),
-        ("SKU-FBR-10",  "Fiber Patch Cord 10m (Bulk)",    None, 150,  today, "Sarah Lee (Local Procurement)", "INBOUND", "LP-2026-02"),
-        ("SKU-CBL-TIE", "UV Cable Ties Pack (Bulk)",      None, 500,  today, "Sarah Lee (Local Procurement)", "INBOUND", "LP-2026-03"),
-    ]
+    rows = []
+    for sku, count in serial_stock.items():
+        prefix = sku.rsplit("-", 1)[0]  # CARD-CC-01 -> CARD-CC, keeps serials unique per part
+        for i in range(1, count + 1):
+            rows.append((sku, desc[sku], f"SN-{prefix}-{1000 + i}", 1, seed_date,
+                         "John Doe (WH Inbound)", "INBOUND", "PO-OPENING"))
+    for sku, qty in bulk_stock.items():
+        rows.append((sku, desc[sku], None, qty, seed_date,
+                     "Sarah Lee (Local Procurement)", "INBOUND", "LP-OPENING"))
 
     cur.executemany("""
     INSERT INTO wms_ledger
     (sku, item_description, serial_number, qty, transaction_date, handled_by, transaction_type, reference)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, initial_ledger)
+    """, rows)
 
-    bays = [
+    cur.executemany("INSERT INTO wh_bays VALUES (?, ?, ?, ?)", [
         ("BAY-A1", "Active Hardware Zone", 20, 12),
         ("BAY-A2", "Active Hardware Zone", 20, 4),
         ("BAY-B1", "Bulk & Civil Zone",    40, 15),
         ("BAY-Q1", "Faulty Quarantine",    10, 0),
-    ]
-
-    cur.executemany(
-        "INSERT INTO wh_bays (bay_id, zone, max_pallets, used_pallets) VALUES (?, ?, ?, ?)",
-        bays,
-    )
+    ])
 
     conn.commit()
     conn.close()
@@ -202,13 +312,8 @@ def setup_wms_db(force_reset: bool = False):
 
 
 def setup_suppliers_db(force_reset: bool = False):
-    if os.path.exists(SUPPLIERS_DB) and not force_reset:
-        print(f"Using existing {SUPPLIERS_DB}")
+    if not _fresh(SUPPLIERS_DB, force_reset):
         return
-
-    if os.path.exists(SUPPLIERS_DB):
-        os.remove(SUPPLIERS_DB)
-
     conn = sqlite3.connect(SUPPLIERS_DB)
     cur = conn.cursor()
 
@@ -240,24 +345,18 @@ def setup_suppliers_db(force_reset: bool = False):
     )
     """)
 
-    catalog = [
-        # Internal Company Imports (IntelliCommmsTech HQ)
-        ("SUP-INT", "IntelliCommmsTech", "INTERNAL", "SKU-RU-5G",  "5G Radio Unit (Standard)",  25, 2100.00, 5),
-        ("SUP-INT", "IntelliCommmsTech", "INTERNAL", "SKU-BBU-01", "Baseband Unit",             15, 2800.00, 5),
-        ("SUP-INT", "IntelliCommmsTech", "INTERNAL", "SKU-ANT-04", "Sector Antenna (Tri-band)", 30, 750.00,  4),
-
-        # 3rd-Party External Hardware Suppliers (faster lead times, higher unit cost)
-        ("SUP-A", "Apex Telecom Hardware", "3RD_PARTY", "SKU-RU-5G",  "5G Radio Unit (Standard)",  5, 2400.00, 3),
-        ("SUP-B", "RapidTel Express UK",   "3RD_PARTY", "SKU-RU-5G",  "5G Radio Unit (Standard)",  2, 2450.00, 1),
-        ("SUP-A", "Apex Telecom Hardware", "3RD_PARTY", "SKU-BBU-01", "Baseband Unit",             4, 3050.00, 3),
-        ("SUP-B", "RapidTel Express UK",   "3RD_PARTY", "SKU-BBU-01", "Baseband Unit",             1, 3100.00, 1),
-        ("SUP-A", "Apex Telecom Hardware", "3RD_PARTY", "SKU-ANT-04", "Sector Antenna (Tri-band)", 8, 840.00,  2),
-
-        # Local 3rd-Party Bulk Supplies
-        ("SUP-C", "Essex Civil & Bulk Supplies", "3RD_PARTY", "SKU-UPVC-20", "20mm uPVC Conduit Pipe (Local)", 5000, 1.50, 1),
-        ("SUP-C", "Essex Civil & Bulk Supplies", "3RD_PARTY", "SKU-FBR-10",  "Fiber Patch Cord 10m (Bulk)",    500,  22.00, 1),
-        ("SUP-C", "Essex Civil & Bulk Supplies", "3RD_PARTY", "SKU-CBL-TIE", "UV Cable Ties Pack (Bulk)",      2000, 4.00,  1),
-    ]
+    desc = {s: d for s, d, *_ in SKU_MASTER}
+    rate = {s: r for s, _, _, _, r, _, _ in SKU_MASTER}
+    catalog = []
+    for sku, d, serialized, *_ in SKU_MASTER:
+        contract = rate[sku]
+        if serialized:
+            # Internal import: cheapest, slowest. 3rd party: dearer, faster, smaller stock.
+            catalog.append(("SUP-INT", "IntelliCommsTech", "INTERNAL", sku, d, 60, round(contract * 0.80, 2), 5))
+            catalog.append(("SUP-A", "Apex Telecom Hardware", "3RD_PARTY", sku, d, 10, round(contract * 0.92, 2), 2))
+            catalog.append(("SUP-B", "RapidTel Express UK", "3RD_PARTY", sku, d, 4, round(contract * 0.98, 2), 1))
+        else:
+            catalog.append(("SUP-C", "Essex Civil & Bulk Supplies", "3RD_PARTY", sku, d, 10000, round(contract * 0.75, 2), 1))
 
     cur.executemany("""
     INSERT INTO supplier_catalog
@@ -271,17 +370,11 @@ def setup_suppliers_db(force_reset: bool = False):
 
 
 def setup_logistics_db(force_reset: bool = False):
-    if os.path.exists(LOGISTICS_DB) and not force_reset:
-        print(f"Using existing {LOGISTICS_DB}")
+    if not _fresh(LOGISTICS_DB, force_reset):
         return
-
-    if os.path.exists(LOGISTICS_DB):
-        os.remove(LOGISTICS_DB)
-
     conn = sqlite3.connect(LOGISTICS_DB)
     cur = conn.cursor()
 
-    # Inbound imports & supplier deliveries (clearance, WH bay, packing list handoff)
     cur.execute("""
     CREATE TABLE inbound_shipments (
         shipment_id TEXT PRIMARY KEY,
@@ -296,7 +389,6 @@ def setup_logistics_db(force_reset: bool = False):
     )
     """)
 
-    # Outbound dispatches from WH to telecom sites
     cur.execute("""
     CREATE TABLE outbound_deliveries (
         waybill_id TEXT PRIMARY KEY,
@@ -306,6 +398,7 @@ def setup_logistics_db(force_reset: bool = False):
         scheduled_delivery_date TEXT NOT NULL,
         delivery_status TEXT NOT NULL DEFAULT 'SCHEDULED',
         received_by_engineer TEXT,
+        delivered_at TEXT,
         dispatched_items_json TEXT NOT NULL
     )
     """)
@@ -319,71 +412,27 @@ def setup_bom_templates(force_reset: bool = False):
     if os.path.exists(BOM_FILE) and not force_reset:
         print(f"Using existing {BOM_FILE}")
         return
-
-    bom_templates = {
-        "full_site": [
-            {"sku": "SKU-RU-5G",   "qty": 3,  "serialized": True},
-            {"sku": "SKU-BBU-01",  "qty": 1,  "serialized": True},
-            {"sku": "SKU-ANT-04",  "qty": 3,  "serialized": True},
-            {"sku": "SKU-FBR-10",  "qty": 10, "serialized": False},
-            {"sku": "SKU-UPVC-20", "qty": 50, "serialized": False},
-            {"sku": "SKU-CBL-TIE", "qty": 10, "serialized": False},
-        ],
-        "partial_site": [
-            {"sku": "SKU-RU-5G",   "qty": 1,  "serialized": True},
-            {"sku": "SKU-ANT-04",  "qty": 1,  "serialized": True},
-            {"sku": "SKU-FBR-10",  "qty": 4,  "serialized": False},
-            {"sku": "SKU-UPVC-20", "qty": 20, "serialized": False},
-        ],
-        "upgrade": [
-            {"sku": "SKU-RU-5G",   "qty": 2,  "serialized": True},
-            {"sku": "SKU-FBR-10",  "qty": 6,  "serialized": False},
-            {"sku": "SKU-CBL-TIE", "qty": 4,  "serialized": False},
-        ],
-    }
-
     with open(BOM_FILE, "w", encoding="utf-8") as f:
-        json.dump(bom_templates, f, indent=2)
+        json.dump(BOM_TEMPLATES, f, indent=2)
     print(f"Created {BOM_FILE}")
 
 
 def init_all_databases(force_reset: bool = False):
-    setup_orchestrator_db(force_reset=force_reset)
-    setup_wms_db(force_reset=force_reset)
-    setup_suppliers_db(force_reset=force_reset)
-    setup_logistics_db(force_reset=force_reset)
-    setup_bom_templates(force_reset=force_reset)
+    setup_orchestrator_db(force_reset)
+    setup_wms_db(force_reset)
+    setup_suppliers_db(force_reset)
+    setup_logistics_db(force_reset)
+    setup_bom_templates(force_reset)
 
 
 def verify_setup():
     conn = sqlite3.connect(WMS_DB)
     print("\n--- Current Warehouse Stock ---")
-    for row in conn.execute("SELECT sku, item_description, available_qty FROM current_stock"):
-        print(f"  {row[0]:<12} | {row[1]:<32} | Qty: {row[2]}")
-
-    print("\n--- Available Serialized Units ---")
-    for row in conn.execute("""
-        SELECT sku, serial_number
-        FROM wms_ledger
-        WHERE serial_number IS NOT NULL
-        GROUP BY sku, serial_number
-        HAVING SUM(qty) > 0
-    """):
-        print(f"  {row[0]:<12} | {row[1]}")
-
-    print("\n--- Warehouse Bays ---")
-    for row in conn.execute("SELECT bay_id, zone, used_pallets, max_pallets FROM wh_bays"):
-        print(f"  {row[0]:<8} | {row[1]:<22} | {row[2]}/{row[3]} pallets used")
-    conn.close()
-
-    conn = sqlite3.connect(ORCHESTRATOR_DB)
-    print("\n--- Registered Teams ---")
-    for row in conn.execute("SELECT resource_id, role, email FROM resources"):
-        print(f"  {row[0]:<12} | {row[1]:<14} | {row[2]}")
+    for sku, d, qty in conn.execute("SELECT sku, item_description, available_qty FROM current_stock ORDER BY sku"):
+        print(f"  {sku:<14} | {d:<36} | Qty: {qty}")
     conn.close()
 
 
 if __name__ == "__main__":
-    reset = "--reset" in sys.argv
-    init_all_databases(force_reset=reset)
+    init_all_databases(force_reset="--reset" in sys.argv)
     verify_setup()
