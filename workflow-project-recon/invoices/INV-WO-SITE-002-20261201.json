@@ -4,7 +4,7 @@
   "site_id": "SITE-002",
   "site_category": "full_site",
   "work_completed_date": "2026-12-01",
-  "created_date": "2026-11-26",
+  "created_date": "2026-12-01",
   "currency": "GBP",
   "lines": [
     {
@@ -94,9 +94,9 @@
     {
       "code": "UPVC-20",
       "description": "20mm uPVC Conduit",
-      "qty": 73,
+      "qty": 86,
       "unit_price_gbp": 1.5,
-      "line_total_gbp": 109.5
+      "line_total_gbp": 129.0
     },
     {
       "code": "LAB-FULL",
@@ -106,9 +106,9 @@
       "line_total_gbp": 1800.0
     }
   ],
-  "subtotal_gbp": 18081.7,
-  "vat_20pct_gbp": 3616.34,
-  "grand_total_gbp": 21698.04,
+  "subtotal_gbp": 18101.2,
+  "vat_20pct_gbp": 3620.24,
+  "grand_total_gbp": 21721.44,
   "billing_anomalies": [],
   "status": "PENDING_APPROVAL"
 }
