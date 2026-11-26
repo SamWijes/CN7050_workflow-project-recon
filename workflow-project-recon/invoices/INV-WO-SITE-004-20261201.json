@@ -2,31 +2,17 @@
   "invoice_id": "INV-WO-SITE-004-20261201",
   "work_order_id": "WO-SITE-004-20261201",
   "site_id": "SITE-004",
-  "site_category": "partial_site",
+  "site_category": "upgrade",
   "work_completed_date": "2026-12-01",
   "created_date": "2026-11-26",
   "currency": "GBP",
   "lines": [
-    {
-      "code": "BAT-48V-01",
-      "description": "48V 100Ah Lithium Battery",
-      "qty": 8,
-      "unit_price_gbp": 380.0,
-      "line_total_gbp": 3040.0
-    },
     {
       "code": "BBU-01",
       "description": "Baseband Unit",
       "qty": 1,
       "unit_price_gbp": 3100.0,
       "line_total_gbp": 3100.0
-    },
-    {
-      "code": "CAB-OUT-01",
-      "description": "Outdoor Telecom Cabinet",
-      "qty": 1,
-      "unit_price_gbp": 4200.0,
-      "line_total_gbp": 4200.0
     },
     {
       "code": "CARD-BBN-01",
@@ -50,30 +36,16 @@
       "line_total_gbp": 650.0
     },
     {
-      "code": "RECT-01",
-      "description": "Rectifier Shelf",
+      "code": "LAB-UPGRADE",
+      "description": "BBU Upgrade Labour",
       "qty": 1,
-      "unit_price_gbp": 720.0,
-      "line_total_gbp": 720.0
-    },
-    {
-      "code": "SMR-01",
-      "description": "Switch Mode Rectifier (SMR) Module",
-      "qty": 3,
-      "unit_price_gbp": 310.0,
-      "line_total_gbp": 930.0
-    },
-    {
-      "code": "LAB-PARTIAL",
-      "description": "Cabinet Installation Labour",
-      "qty": 1,
-      "unit_price_gbp": 1100.0,
-      "line_total_gbp": 1100.0
+      "unit_price_gbp": 600.0,
+      "line_total_gbp": 600.0
     }
   ],
-  "subtotal_gbp": 15970.0,
-  "vat_20pct_gbp": 3194.0,
-  "grand_total_gbp": 19164.0,
+  "subtotal_gbp": 6580.0,
+  "vat_20pct_gbp": 1316.0,
+  "grand_total_gbp": 7896.0,
   "billing_anomalies": [],
   "status": "PENDING_APPROVAL"
 }

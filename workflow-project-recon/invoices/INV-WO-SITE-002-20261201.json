@@ -2,48 +2,113 @@
   "invoice_id": "INV-WO-SITE-002-20261201",
   "work_order_id": "WO-SITE-002-20261201",
   "site_id": "SITE-002",
-  "issued_date": "2026-11-25",
+  "site_category": "full_site",
+  "work_completed_date": "2026-12-01",
+  "created_date": "2026-11-26",
   "currency": "GBP",
   "lines": [
     {
-      "sku": "SKU-RU-5G",
-      "qty_installed": 3,
-      "unit_price_gbp": 2415.0,
-      "line_total_gbp": 7245.0
+      "code": "BASE-PLT-01",
+      "description": "Cabinet Base Plate",
+      "qty": 1,
+      "unit_price_gbp": 260.0,
+      "line_total_gbp": 260.0
     },
     {
-      "sku": "SKU-BBU-01",
-      "qty_installed": 1,
-      "unit_price_gbp": 3220.0,
-      "line_total_gbp": 3220.0
+      "code": "BAT-48V-01",
+      "description": "48V 100Ah Lithium Battery",
+      "qty": 8,
+      "unit_price_gbp": 380.0,
+      "line_total_gbp": 3040.0
     },
     {
-      "sku": "SKU-ANT-04",
-      "qty_installed": 3,
-      "unit_price_gbp": 862.5,
-      "line_total_gbp": 2587.5
+      "code": "BBU-01",
+      "description": "Baseband Unit",
+      "qty": 1,
+      "unit_price_gbp": 3100.0,
+      "line_total_gbp": 3100.0
     },
     {
-      "sku": "SKU-FBR-10",
-      "qty_installed": 10,
-      "unit_price_gbp": 25.3,
-      "line_total_gbp": 253.0
+      "code": "CAB-OUT-01",
+      "description": "Outdoor Telecom Cabinet",
+      "qty": 1,
+      "unit_price_gbp": 4200.0,
+      "line_total_gbp": 4200.0
     },
     {
-      "sku": "SKU-UPVC-20",
-      "qty_installed": 50,
-      "unit_price_gbp": 1.72,
-      "line_total_gbp": 86.0
+      "code": "CARD-BBN-01",
+      "description": "Baseband Processing (BBN) Card",
+      "qty": 1,
+      "unit_price_gbp": 980.0,
+      "line_total_gbp": 980.0
     },
     {
-      "sku": "SKU-CBL-TIE",
-      "qty_installed": 10,
-      "unit_price_gbp": 4.6,
-      "line_total_gbp": 46.0
+      "code": "CARD-CC-01",
+      "description": "Control & Clock (CC) Card",
+      "qty": 1,
+      "unit_price_gbp": 1250.0,
+      "line_total_gbp": 1250.0
+    },
+    {
+      "code": "FBR-CBL-01",
+      "description": "Fiber Optic Cable",
+      "qty": 3,
+      "unit_price_gbp": 45.0,
+      "line_total_gbp": 135.0
+    },
+    {
+      "code": "MNT-BRK-01",
+      "description": "Mounting Bracket",
+      "qty": 3,
+      "unit_price_gbp": 120.0,
+      "line_total_gbp": 360.0
+    },
+    {
+      "code": "PSU-01",
+      "description": "Power Supply Unit",
+      "qty": 1,
+      "unit_price_gbp": 650.0,
+      "line_total_gbp": 650.0
+    },
+    {
+      "code": "PWR-CBL-2C-20",
+      "description": "20mm 2 Core Power Cable",
+      "qty": 171,
+      "unit_price_gbp": 3.2,
+      "line_total_gbp": 547.2
+    },
+    {
+      "code": "RECT-01",
+      "description": "Rectifier Shelf",
+      "qty": 1,
+      "unit_price_gbp": 720.0,
+      "line_total_gbp": 720.0
+    },
+    {
+      "code": "SMR-01",
+      "description": "Switch Mode Rectifier (SMR) Module",
+      "qty": 3,
+      "unit_price_gbp": 310.0,
+      "line_total_gbp": 930.0
+    },
+    {
+      "code": "UPVC-20",
+      "description": "20mm uPVC Conduit",
+      "qty": 73,
+      "unit_price_gbp": 1.5,
+      "line_total_gbp": 109.5
+    },
+    {
+      "code": "LAB-FULL",
+      "description": "Full Site Installation Labour",
+      "qty": 1,
+      "unit_price_gbp": 1800.0,
+      "line_total_gbp": 1800.0
     }
   ],
-  "subtotal_gbp": 13437.5,
-  "vat_20pct_gbp": 2687.5,
-  "grand_total_gbp": 16125.0,
-  "status": "ISSUED"
+  "subtotal_gbp": 18081.7,
+  "vat_20pct_gbp": 3616.34,
+  "grand_total_gbp": 21698.04,
+  "billing_anomalies": [],
+  "status": "PENDING_APPROVAL"
 }

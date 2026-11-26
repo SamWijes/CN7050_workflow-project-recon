@@ -1,0 +1,79 @@
+{
+  "invoice_id": "INV-WO-SITE-006-20261202",
+  "work_order_id": "WO-SITE-006-20261202",
+  "site_id": "SITE-006",
+  "site_category": "partial_site",
+  "work_completed_date": "2026-12-02",
+  "created_date": "2026-11-26",
+  "currency": "GBP",
+  "lines": [
+    {
+      "code": "BAT-48V-01",
+      "description": "48V 100Ah Lithium Battery",
+      "qty": 8,
+      "unit_price_gbp": 380.0,
+      "line_total_gbp": 3040.0
+    },
+    {
+      "code": "BBU-01",
+      "description": "Baseband Unit",
+      "qty": 1,
+      "unit_price_gbp": 3100.0,
+      "line_total_gbp": 3100.0
+    },
+    {
+      "code": "CAB-OUT-01",
+      "description": "Outdoor Telecom Cabinet",
+      "qty": 1,
+      "unit_price_gbp": 4200.0,
+      "line_total_gbp": 4200.0
+    },
+    {
+      "code": "CARD-BBN-01",
+      "description": "Baseband Processing (BBN) Card",
+      "qty": 1,
+      "unit_price_gbp": 980.0,
+      "line_total_gbp": 980.0
+    },
+    {
+      "code": "CARD-CC-01",
+      "description": "Control & Clock (CC) Card",
+      "qty": 1,
+      "unit_price_gbp": 1250.0,
+      "line_total_gbp": 1250.0
+    },
+    {
+      "code": "PSU-01",
+      "description": "Power Supply Unit",
+      "qty": 1,
+      "unit_price_gbp": 650.0,
+      "line_total_gbp": 650.0
+    },
+    {
+      "code": "RECT-01",
+      "description": "Rectifier Shelf",
+      "qty": 1,
+      "unit_price_gbp": 720.0,
+      "line_total_gbp": 720.0
+    },
+    {
+      "code": "SMR-01",
+      "description": "Switch Mode Rectifier (SMR) Module",
+      "qty": 3,
+      "unit_price_gbp": 310.0,
+      "line_total_gbp": 930.0
+    },
+    {
+      "code": "LAB-PARTIAL",
+      "description": "Cabinet Installation Labour",
+      "qty": 1,
+      "unit_price_gbp": 1100.0,
+      "line_total_gbp": 1100.0
+    }
+  ],
+  "subtotal_gbp": 15970.0,
+  "vat_20pct_gbp": 3194.0,
+  "grand_total_gbp": 19164.0,
+  "billing_anomalies": [],
+  "status": "PENDING_APPROVAL"
+}

@@ -1,0 +1,229 @@
+{
+  "batch_id": "BATCH-UK-5G-Phase2-01",
+  "project_name": "UK-5G-Phase2",
+  "currency": "GBP",
+  "sites": [
+    {
+      "site_id": "SITE-001",
+      "work_order_id": "WO-SITE-001-20261201",
+      "lines": [
+        {
+          "code": "BASE-PLT-01",
+          "description": "Cabinet Base Plate",
+          "qty": 1,
+          "unit_price_gbp": 260.0,
+          "line_total_gbp": 260.0
+        },
+        {
+          "code": "BAT-48V-01",
+          "description": "48V 100Ah Lithium Battery",
+          "qty": 8,
+          "unit_price_gbp": 380.0,
+          "line_total_gbp": 3040.0
+        },
+        {
+          "code": "BBU-01",
+          "description": "Baseband Unit",
+          "qty": 1,
+          "unit_price_gbp": 3100.0,
+          "line_total_gbp": 3100.0
+        },
+        {
+          "code": "CAB-OUT-01",
+          "description": "Outdoor Telecom Cabinet",
+          "qty": 1,
+          "unit_price_gbp": 4200.0,
+          "line_total_gbp": 4200.0
+        },
+        {
+          "code": "CARD-BBN-01",
+          "description": "Baseband Processing (BBN) Card",
+          "qty": 1,
+          "unit_price_gbp": 980.0,
+          "line_total_gbp": 980.0
+        },
+        {
+          "code": "CARD-CC-01",
+          "description": "Control & Clock (CC) Card",
+          "qty": 1,
+          "unit_price_gbp": 1250.0,
+          "line_total_gbp": 1250.0
+        },
+        {
+          "code": "FBR-CBL-01",
+          "description": "Fiber Optic Cable",
+          "qty": 3,
+          "unit_price_gbp": 45.0,
+          "line_total_gbp": 135.0
+        },
+        {
+          "code": "MNT-BRK-01",
+          "description": "Mounting Bracket",
+          "qty": 3,
+          "unit_price_gbp": 120.0,
+          "line_total_gbp": 360.0
+        },
+        {
+          "code": "PSU-01",
+          "description": "Power Supply Unit",
+          "qty": 1,
+          "unit_price_gbp": 650.0,
+          "line_total_gbp": 650.0
+        },
+        {
+          "code": "PWR-CBL-2C-20",
+          "description": "20mm 2 Core Power Cable",
+          "qty": 65,
+          "unit_price_gbp": 3.2,
+          "line_total_gbp": 208.0
+        },
+        {
+          "code": "RECT-01",
+          "description": "Rectifier Shelf",
+          "qty": 1,
+          "unit_price_gbp": 720.0,
+          "line_total_gbp": 720.0
+        },
+        {
+          "code": "SMR-01",
+          "description": "Switch Mode Rectifier (SMR) Module",
+          "qty": 3,
+          "unit_price_gbp": 310.0,
+          "line_total_gbp": 930.0
+        },
+        {
+          "code": "UPVC-20",
+          "description": "20mm uPVC Conduit",
+          "qty": 40,
+          "unit_price_gbp": 1.5,
+          "line_total_gbp": 60.0
+        },
+        {
+          "code": "LAB-FULL",
+          "description": "Full Site Installation Labour",
+          "qty": 1,
+          "unit_price_gbp": 1800.0,
+          "line_total_gbp": 1800.0
+        }
+      ],
+      "subtotal_gbp": 17693.0
+    },
+    {
+      "site_id": "SITE-004",
+      "work_order_id": "WO-SITE-004-20261201",
+      "lines": [
+        {
+          "code": "BBU-01",
+          "description": "Baseband Unit",
+          "qty": 1,
+          "unit_price_gbp": 3100.0,
+          "line_total_gbp": 3100.0
+        },
+        {
+          "code": "CARD-BBN-01",
+          "description": "Baseband Processing (BBN) Card",
+          "qty": 1,
+          "unit_price_gbp": 980.0,
+          "line_total_gbp": 980.0
+        },
+        {
+          "code": "CARD-CC-01",
+          "description": "Control & Clock (CC) Card",
+          "qty": 1,
+          "unit_price_gbp": 1250.0,
+          "line_total_gbp": 1250.0
+        },
+        {
+          "code": "PSU-01",
+          "description": "Power Supply Unit",
+          "qty": 1,
+          "unit_price_gbp": 650.0,
+          "line_total_gbp": 650.0
+        },
+        {
+          "code": "LAB-UPGRADE",
+          "description": "BBU Upgrade Labour",
+          "qty": 1,
+          "unit_price_gbp": 600.0,
+          "line_total_gbp": 600.0
+        }
+      ],
+      "subtotal_gbp": 6580.0
+    },
+    {
+      "site_id": "SITE-006",
+      "work_order_id": "WO-SITE-006-20261202",
+      "lines": [
+        {
+          "code": "BAT-48V-01",
+          "description": "48V 100Ah Lithium Battery",
+          "qty": 8,
+          "unit_price_gbp": 380.0,
+          "line_total_gbp": 3040.0
+        },
+        {
+          "code": "BBU-01",
+          "description": "Baseband Unit",
+          "qty": 1,
+          "unit_price_gbp": 3100.0,
+          "line_total_gbp": 3100.0
+        },
+        {
+          "code": "CAB-OUT-01",
+          "description": "Outdoor Telecom Cabinet",
+          "qty": 1,
+          "unit_price_gbp": 4200.0,
+          "line_total_gbp": 4200.0
+        },
+        {
+          "code": "CARD-BBN-01",
+          "description": "Baseband Processing (BBN) Card",
+          "qty": 1,
+          "unit_price_gbp": 980.0,
+          "line_total_gbp": 980.0
+        },
+        {
+          "code": "CARD-CC-01",
+          "description": "Control & Clock (CC) Card",
+          "qty": 1,
+          "unit_price_gbp": 1250.0,
+          "line_total_gbp": 1250.0
+        },
+        {
+          "code": "PSU-01",
+          "description": "Power Supply Unit",
+          "qty": 1,
+          "unit_price_gbp": 650.0,
+          "line_total_gbp": 650.0
+        },
+        {
+          "code": "RECT-01",
+          "description": "Rectifier Shelf",
+          "qty": 1,
+          "unit_price_gbp": 720.0,
+          "line_total_gbp": 720.0
+        },
+        {
+          "code": "SMR-01",
+          "description": "Switch Mode Rectifier (SMR) Module",
+          "qty": 3,
+          "unit_price_gbp": 310.0,
+          "line_total_gbp": 930.0
+        },
+        {
+          "code": "LAB-PARTIAL",
+          "description": "Cabinet Installation Labour",
+          "qty": 1,
+          "unit_price_gbp": 1100.0,
+          "line_total_gbp": 1100.0
+        }
+      ],
+      "subtotal_gbp": 15970.0
+    }
+  ],
+  "subtotal_gbp": 40243.0,
+  "vat_20pct_gbp": 8048.6,
+  "grand_total_gbp": 48291.6,
+  "billing_anomalies": false,
+  "status": "PENDING_APPROVAL"
+}
