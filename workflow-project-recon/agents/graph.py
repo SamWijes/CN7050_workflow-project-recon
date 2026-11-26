@@ -144,7 +144,20 @@ def supervisor_node(state: ProjectState) -> dict:
 
     if not options or steps > MAX_STEPS:
         return {"next_agent": "FINISH", "steps": steps}
-
+    
+    if len(options) == 1:  # only one agent can act: no decision to make, save an LLM call
+        decision = _fallback(options)
+        decision.reason = "only one agent has work available"
+        for wo in decision.work_order_ids:
+            status = next(s["status"] for s in sites if s["work_order_id"] == wo)
+            attempts[f"{wo}:{status}"] = attempts.get(f"{wo}:{status}", 0) + 1
+        log_event("Main Orchestrator", f"ROUTE -> {decision.next_agent}",
+                  {"work_orders": decision.work_order_ids, "reason": decision.reason})
+        return {"next_agent": decision.next_agent, "steps": steps, "attempts": attempts,
+                "task": {"work_order_ids": decision.work_order_ids, "instruction": decision.instruction},
+                "events": [{"agent": "Main Orchestrator", "action": f"ROUTE -> {decision.next_agent}",
+                            "detail": f"{decision.work_order_ids}: {decision.reason}"}]}
+    
     llm = get_llm().with_structured_output(RouteDecision)
     try:
         decision = llm.invoke([
@@ -217,7 +230,13 @@ def make_worker_node(name: str, agent):
                 f"To finish you MUST: {STAGE_GOALS.get(start, 'move it to its next stage.')}")]
             tools_used, reply = [], ""
             for attempt in range(MAX_NUDGES + 1):
-                result = agent.invoke({"messages": messages}, config={"recursion_limit": 40})
+                
+                try:
+                    result = agent.invoke({"messages": messages}, config={"recursion_limit": 40})
+                except Exception as e:  # timeout, malformed tool call, Ollama error: log and move on
+                    log_event(DISPLAY_NAMES[name], "AGENT_ERROR", str(e)[:300], wo)
+                    break
+
                 messages = result["messages"]
                 tools_used = [tc["name"] for m in messages if isinstance(m, AIMessage) for tc in m.tool_calls]
                 reply = messages[-1].content
