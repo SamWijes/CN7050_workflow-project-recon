@@ -144,6 +144,25 @@ def order_from_supplier(work_order_id: str, sku: str, qty: int, supplier_id: str
     log_event("Inventory Agent", "PURCHASE_ORDER", res, work_order_id)
     return {k: res.get(k) for k in ("sku", "qty", "po_id", "supplier", "unit_price_gbp", "arrival_date", "late", "status")}
 
+@tool
+def order_site_shortages(work_order_id: str, strategy: str = "cheapest_on_time") -> dict:
+    """Orders every shortage for the site in one step. strategy: 'cheapest_on_time' (cheapest supplier
+    that still meets the need_by date) or 'fastest' (shortest lead time, use when the date is at risk)."""
+    wo, err = _wo_or_error(work_order_id)
+    if err:
+        return err
+    orders = []
+    for sh in _site_shortages(work_order_id):
+        suppliers = query_suppliers(sh["sku"], sh["shortage_qty"])
+        pick = None
+        if strategy == "fastest" and suppliers:
+            pick = min(suppliers, key=lambda x: x["lead_time_days"])["supplier_id"]
+        res = source_shortage(sh["sku"], sh["shortage_qty"], _is_serialized(sh["sku"]), wo["scheduled_date"],
+                              supplier_id=pick)
+        log_event("Inventory Agent", "PURCHASE_ORDER", res, work_order_id)
+        orders.append({k: res.get(k) for k in ("sku", "qty", "supplier", "arrival_date", "late", "status")})
+    return {"work_order_id": work_order_id, "strategy": strategy, "orders": orders,
+            "next_step": "call confirm_site_stock_ready"}
 
 @tool
 def confirm_site_stock_ready(work_order_id: str) -> dict:
@@ -454,7 +473,7 @@ def create_invoice(work_order_id: str) -> dict:
 
 
 SHARED_TOOLS = [search_knowledge, get_site_status, list_project_sites]
-INVENTORY_TOOLS = [get_stock_level, check_site_stock, compare_suppliers, order_from_supplier, confirm_site_stock_ready]
+INVENTORY_TOOLS = [check_site_stock, order_site_shortages, confirm_site_stock_ready, compare_suppliers, get_stock_level]
 LOGISTICS_TOOLS = [dispatch_site, get_delivery_record]
 FIELD_TOOLS = [run_site_installation, request_replacement]
 FINANCE_TOOLS = [reconcile_site, create_invoice]

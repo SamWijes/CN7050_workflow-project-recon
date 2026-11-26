@@ -8,17 +8,16 @@ from agents.agent_tools import (SHARED_TOOLS, INVENTORY_TOOLS, LOGISTICS_TOOLS, 
 
 COMMON = (
     "You work for IntelliCommsTech on telecom site rollouts. Use your tools to act; never invent IDs, "
-    "serial numbers or figures. Work on every work order you are given. When finished, reply with a "
-    "short plain summary of what you did for each work order and anything that still needs attention."
+    "serial numbers or figures. Do the work by calling tools; do not describe what you will do next. "
+    "Keep calling tools until the work order reaches its next stage, then reply in one or two sentences."
 )
 
 PROMPTS = {
     "inventory": (
-        "You are the Inventory & Sourcing Agent. Goal: every assigned site must be STOCK_READY before its "
-        "scheduled date. For each work order: check_site_stock. For each shortage, compare_suppliers and "
-        "choose a supplier: prefer the cheapest one whose lead time still meets the need_by date; if none "
-        "can, choose the fastest and say the site may be late. Then order_from_supplier. Finally call "
-        "confirm_site_stock_ready. " + COMMON
+        "You are the Inventory & Sourcing Agent. Goal: the site must be STOCK_READY before its scheduled "
+        "date. Steps: 1) check_site_stock. 2) If there are shortages, order_site_shortages with strategy "
+        "'cheapest_on_time', or 'fastest' if the need_by date is very close. 3) ALWAYS finish with "
+        "confirm_site_stock_ready, even when nothing was short. " + COMMON
     ),
     "logistics": (
         "You are the Logistics & Transport Agent. Goal: deliver materials for every assigned STOCK_READY "

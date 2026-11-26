@@ -1,0 +1,51 @@
+{
+  "invoice_id": "INV-WO-SITE-004-20261201",
+  "work_order_id": "WO-SITE-004-20261201",
+  "site_id": "SITE-004",
+  "site_category": "upgrade",
+  "work_completed_date": "2026-12-01",
+  "created_date": "2026-11-26",
+  "currency": "GBP",
+  "lines": [
+    {
+      "code": "BBU-01",
+      "description": "Baseband Unit",
+      "qty": 1,
+      "unit_price_gbp": 3100.0,
+      "line_total_gbp": 3100.0
+    },
+    {
+      "code": "CARD-BBN-01",
+      "description": "Baseband Processing (BBN) Card",
+      "qty": 1,
+      "unit_price_gbp": 980.0,
+      "line_total_gbp": 980.0
+    },
+    {
+      "code": "CARD-CC-01",
+      "description": "Control & Clock (CC) Card",
+      "qty": 1,
+      "unit_price_gbp": 1250.0,
+      "line_total_gbp": 1250.0
+    },
+    {
+      "code": "PSU-01",
+      "description": "Power Supply Unit",
+      "qty": 1,
+      "unit_price_gbp": 650.0,
+      "line_total_gbp": 650.0
+    },
+    {
+      "code": "LAB-UPGRADE",
+      "description": "BBU Upgrade Labour",
+      "qty": 1,
+      "unit_price_gbp": 600.0,
+      "line_total_gbp": 600.0
+    }
+  ],
+  "subtotal_gbp": 6580.0,
+  "vat_20pct_gbp": 1316.0,
+  "grand_total_gbp": 7896.0,
+  "billing_anomalies": [],
+  "status": "PENDING_APPROVAL"
+}

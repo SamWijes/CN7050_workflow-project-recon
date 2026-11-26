@@ -3,8 +3,10 @@ ollama
 openai
 python-dotenv
 
-# Orchestration (Phase 2)
+# Orchestration
 langgraph
+langgraph-checkpoint-sqlite
+langchain>=1.0
 langchain-core
 langchain-ollama
 

@@ -180,17 +180,59 @@ def supervisor_node(state: ProjectState) -> dict:
                         "detail": f"{decision.work_order_ids}: {decision.reason}"}]}
 
 
+# What "done" means for each stage, spelled out for a small model
+STAGE_GOALS = {
+    "PLANNED": "Make it STOCK_READY: check_site_stock, order_site_shortages if anything is short, then "
+               "confirm_site_stock_ready.",
+    "STOCK_READY": "Deliver it: call dispatch_site.",
+    "DELIVERED": "Install it: call run_site_installation, then request_replacement for each fault that "
+                 "needs a replacement.",
+    "REPLACEMENT_PENDING": "Call run_site_installation to list outstanding faults, then request_replacement "
+                           "for each one.",
+    "INSTALLED": "Call reconcile_site, then create_invoice if it reconciled.",
+    "RECONCILED": "Call create_invoice.",
+    "RECON_DISCREPANCY": "Call investigate_discrepancy, then send_email to the contact it gives you.",
+    "REPLY_RECEIVED": "Call read_replies, then record_site_return, book_late_quarantine or escalate_to_kam "
+                      "according to exactly what the reply says.",
+}
+MAX_NUDGES = 2
+
+
+def _status(work_order_id: str) -> str:
+    conn = sqlite3.connect(ORCHESTRATOR_DB)
+    row = conn.execute("SELECT status FROM work_orders WHERE work_order_id = ?", (work_order_id,)).fetchone()
+    conn.close()
+    return row[0] if row else "UNKNOWN"
+
+
 def make_worker_node(name: str, agent):
+    """Runs the agent one work order at a time, and nudges it if it stops before the stage changes."""
     def node(state: ProjectState) -> dict:
-        task = state["task"]
-        prompt = (f"{task['instruction']}\nWork orders: {', '.join(task['work_order_ids'])}\n"
-                  f"Project: {state['project_name']}")
-        result = agent.invoke({"messages": [HumanMessage(prompt)]}, config={"recursion_limit": 60})
-        tools_used = [tc["name"] for m in result["messages"] if isinstance(m, AIMessage) for tc in m.tool_calls]
-        reply = result["messages"][-1].content
-        log_event(DISPLAY_NAMES[name], "TASK_DONE", {"tools": tools_used, "reply": reply[:500]})
-        return {"events": [{"agent": DISPLAY_NAMES[name], "action": "TASK_DONE",
-                            "detail": f"tools={tools_used} | {reply[:300]}"}]}
+        task, events = state["task"], []
+        for wo in task["work_order_ids"]:
+            start = _status(wo)
+            # One work order per prompt: never show the model other site IDs it might act on by mistake
+            messages = [HumanMessage(
+                f"Work order: {wo}\nProject: {state['project_name']}\nCurrent stage: {start}\n"
+                f"To finish you MUST: {STAGE_GOALS.get(start, 'move it to its next stage.')}")]
+            tools_used, reply = [], ""
+            for attempt in range(MAX_NUDGES + 1):
+                result = agent.invoke({"messages": messages}, config={"recursion_limit": 40})
+                messages = result["messages"]
+                tools_used = [tc["name"] for m in messages if isinstance(m, AIMessage) for tc in m.tool_calls]
+                reply = messages[-1].content
+                if _status(wo) != start:
+                    break
+                if attempt < MAX_NUDGES:
+                    log_event(DISPLAY_NAMES[name], "NUDGED", f"still {start} after attempt {attempt + 1}", wo)
+                    messages = messages + [HumanMessage(
+                        f"{wo} is still {start}. You have not finished. Do not explain, call the next tool now: "
+                        f"{STAGE_GOALS.get(start, '')}")]
+            log_event(DISPLAY_NAMES[name], "TASK_DONE",
+                      {"tools": tools_used, "stage": f"{start} -> {_status(wo)}", "reply": reply[:400]}, wo)
+            events.append({"agent": DISPLAY_NAMES[name], "action": "TASK_DONE",
+                           "detail": f"{wo}: {start} -> {_status(wo)} | tools={tools_used}"})
+        return {"events": events}
     return node
 
 
